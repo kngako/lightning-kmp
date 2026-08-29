@@ -1,0 +1,247 @@
+# Porting Iceberg threshold signing to lightning-kmp
+
+Date: 2026-08-27
+Status: estimate / plan. No code here is modified; this document only describes the work.
+
+## What this is
+
+Iceberg is a t-of-n threshold Schnorr scheme. In the sibling fork of eclair
+(`sources/eclair/`, reviewed in `.idea/docs/eclair-fork-review.md`), an Iceberg group occupies ONE
+side of a channel's 2-of-2 MuSig2 funding output: the channel's funding key has no private key
+anywhere, and every funding-key signature is a two-round group protocol (round one needs `2t-1`
+members online, round two needs `t`). The counterparty is entirely stock and cannot tell the
+difference. The eclair fork exists to measure the cost of that per-payment, and the same questions
+can be asked of lightning-kmp.
+
+This document estimates and plans that port. The eclair fork is the reference implementation; its
+design transfers essentially unchanged, and where lightning-kmp differs it is almost always in the
+porter's favour.
+
+## Summary estimate
+
+| work item | effort |
+|---|---|
+| `FundingSigner` seam in `commonMain` + `ChannelKeys` integration | ~1 week |
+| Kotlin port of `IcebergSigner` / `IcebergFundingSigner` (jvmMain) | ~2–3 days |
+| Mutual close routing | ~1–2 days |
+| Force-close / claim paths | ~½ day (pubkey-only swaps) |
+| Test harness (signer injection, channel spec, session spec) | ~2–3 days |
+| **Total, benchmark-grade** | **~2–3 weeks** |
+| Splice routing (optional, deferrable) | + ~1 week |
+| Native/iOS targets, production deployment | out of scope (see below) |
+
+## Why lightning-kmp is a smaller surface than eclair
+
+Three of the problems that dominate the eclair review do not exist here:
+
+1. **No channel announcements.** lightning-kmp is Phoenix-oriented and never generates
+   `announcement_signatures` (the wire type exists at
+   `modules/core/src/commonMain/kotlin/fr/acinq/lightning/wire/LightningMessages.kt:1518`, unused).
+   Liquidity-ads `will_fund` is signed with the *node* key
+   (`wire/LiquidityAds.kt:198`). In eclair, announcement signatures are ECDSA over the funding
+   private key — impossible for a Schnorr threshold scheme — forcing the "unannounced channels
+   only" restriction. Here that restriction is the default state of the codebase.
+2. **Force-close claims never use the funding key.** All claim transactions (main delayed output,
+   HTLC success/timeout, penalty, anchor) are signed with per-commitment keys derived from the
+   commitment master key. The funding key appears in the claim paths only as a *public* key, for
+   locating outputs and building the funding input. A threshold-backed channel's unilateral-exit
+   story therefore needs no threshold signing at all — only pubkey plumbing. (The one
+   private-key use is publishing our own commitment, `Commitment.fullySignedCommitTx` at
+   `channel/Commitments.kt:282-299`, which the seam covers.)
+3. **Taproot is fully implemented and there is no segwit-v0 legacy surface to defend.**
+   `Transactions.CommitmentFormat` has exactly two variants (`AnchorOutputs`,
+   `SimpleTaprootChannels` at `transactions/Transactions.kt:86,106`); taproot commit signing
+   (`partialSign`/`aggregateSigs`/`checkRemotePartialSignature`, `Transactions.kt:239-303`), taproot
+   mutual close with nonce TLVs (`ShutdownTlv.ShutdownNonce` at `wire/ChannelTlv.kt:324`,
+   `ClosingSigTlv.NextCloseeNonce` at `:520`; logic at `channel/Helpers.kt:269-440`), and taproot
+   splicing with nonce exchange all exist upstream. The port can be taproot-only from day one
+   without giving anything up.
+
+One more simplification: `NonceGenerator.signingNonce`
+(`crypto/NonceGenerator.kt:24-28`) is already random and pubkey-only, so the "fresh nonce" signer
+method needs no behavioural adaptation — unlike the deterministic-verification-nonce side, it never
+touches the funding private key.
+
+## Architecture of the port
+
+Same shape as the eclair fork: ONE seam that supplies both the funding public key and every
+funding-key signature, so the two cannot disagree.
+
+### The seam (commonMain)
+
+A `FundingSigner` interface in `fr.acinq.lightning.crypto`, defined in `commonMain` so all channel
+logic can compile against it:
+
+```kotlin
+interface FundingSigner {
+    /** The funding public key that goes into the channel's 2-of-2 funding output. */
+    val publicKey: PublicKey
+
+    /** Deterministic public nonce for OUR local commit, published ahead of time and re-derived
+     *  (never cached) when we later sign that same commitment. */
+    fun verificationNonce(id: VerificationNonceId): IndividualNonce
+
+    /** Sign OUR OWN commit/closing tx under the already-published deterministic nonce. */
+    fun signWithVerificationNonce(tx: ChannelSpendTransaction, remoteFundingPubKey: PublicKey,
+        id: VerificationNonceId, remoteNonce: IndividualNonce): Either<Throwable, PartialSignatureWithNonce>
+
+    /** Sign the COUNTERPARTY's commit/closing tx with a fresh, never-published nonce. */
+    fun signWithFreshNonce(tx: ChannelSpendTransaction, remoteFundingPubKey: PublicKey,
+        fundingTxId: TxId, remoteNonce: IndividualNonce): Either<Throwable, PartialSignatureWithNonce>
+
+    /** Escape hatch for paths that genuinely need the raw key; fails loudly with [operation]
+     *  named when the key is threshold-held. */
+    val privateKeyOrNull: PrivateKey?
+    fun privateKey(operation: String): PrivateKey
+}
+```
+
+with `VerificationNonceId(fundingTxId, remoteFundingPubKey, commitIndex)` and a
+`PrivateKeyFundingSigner` default that reproduces today's behaviour call-for-call (its
+`verificationNonce` delegates to the existing `NonceGenerator.verificationNonce`).
+
+Notes that carry over from the eclair fork verbatim:
+
+- **Type the nonce identity.** At channel establishment the first verification nonce is derived
+  from placeholder values (the funding txid and peer funding key are not yet known when
+  `open_channel`/`accept_channel` go out) while the signature itself is against the peer's real
+  key — so a signing call carries two different `(TxId, PublicKey)` pairs. A dedicated
+  `VerificationNonceId` keeps them from being swapped.
+- **Generalize over `ChannelSpendTransaction`, not `CommitTx`.** The eclair seam typed its signing
+  methods to `CommitTx`, which is exactly what makes mutual close unreachable there. Typing to the
+  common supertype from the start costs nothing and makes mutual close a same-week item.
+
+### `ChannelKeys` integration
+
+`crypto/KeyManager.kt:107-111`: `ChannelKeys` gains an optional `fundingSigner: FundingSigner?`
+(default null). `fundingKey(fundingTxIndex)` becomes a poison pill when a signer is injected (throw
+with the operation named — there is no private key to return and a wrong answer is worse than a
+loud failure). Add a `fundingPublicKey(fundingTxIndex)` accessor: today every pubkey use goes
+through `fundingKey(i).publicKey()`, and each of those call sites must be audited and swapped
+(mechanical, but numerous — see the inventory below). Injection happens through
+`LocalKeyManager.channelKeys` (`crypto/LocalKeyManager.kt:70-75`) or an added parameter on
+`LocalChannelParams`; `RecoveredChannelKeys` (`LocalKeyManager.kt:84-97`) already proves a
+pubkey-only channel-keys mode is a supported concept in this codebase.
+
+Splicing derives index `n+1` keys (`states/Normal.kt:423,470`); an injected signer carries one
+key. Guard with the eclair fork's `requireIndexZero` equivalent (fail loudly) until splice routing
+is done — do NOT silently reuse index 0's key, which produces a funding output nobody can spend.
+The cheap long-term option is to let an injected signer serve the *same* group key at every index.
+
+### The Iceberg implementation (jvmMain)
+
+Port of `crypto/IcebergSigner.scala` + `FundingSigner.IcebergFundingSigner` from
+`sources/eclair/eclair-core/src/main/scala/fr/acinq/eclair/crypto/` (~400 lines of Scala, and the
+JNI calls translate almost literally):
+
+- `IcebergGroup(n, t, groupPubkey, shares, pubshares, caches)` — key material from simulated
+  trusted-dealer keygen (`Iceberg.sharesGen` / `shareCacheCreate` / `pubshareGen` / `pubkeyAgg`
+  over `2t-1` pubshares). 1-based member indexing, round one quorum `2t-1`, round two quorum `t`.
+- Round one: per-member `nonceGen(share, sid, cache)` aggregated with `nonceAgg` — a pure function
+  of the session id `sid`, which is what makes deterministic verification nonces work without
+  storing secrets.
+- Round two: `partialSign` per signer + `partialSigAgg`, consuming the OUTER session's real
+  key-aggregation cache and the cosigner's aggregate nonce — both must be built with the same key
+  order (`Scripts.Taproot.musig2Aggregate` sorts internally) and the same BIP341 key-path tweak the
+  outer session applies, or the partial signature is well-formed and simply does not combine.
+- Session labels: `sid = sha256(fundingTxId || remoteFundingPubKey || commitIndex)` for
+  verification nonces (32 bytes, must never repeat — reuse across two messages is a key-leaking
+  path that raises no error), `randomBytes32()` for fresh nonces, matching upstream
+  `signingNonce` semantics exactly.
+
+This lives in `jvmMain` (or is injected from the app layer) because the Iceberg API is JVM-only —
+see "Build and platform notes".
+
+## Call-site inventory (what actually gets touched)
+
+Private-key uses of the funding key, grouped by feature. **[P]** = the private key is used as a
+secret; everything else needs only the public key and swaps to `fundingPublicKey(...)`.
+
+**Channel open (single- and dual-funded share the interactive-tx code)**
+- `channel/states/WaitForInit.kt:49`, `WaitForOpenChannel.kt:52-53`, `WaitForAcceptChannel.kt:47,55`,
+  `channel/InteractiveTx.kt:115-119,745,1233` — pubkey only.
+- `channel/InteractiveTx.kt:1257-1259` — **[P]** first-commit partial sign (fresh nonce);
+  `:784-785` — **[P]** verification nonces.
+
+**Normal operation (`commit_sig`)**
+- `channel/Commitments.kt:176-205` (`RemoteCommit.sign`), `:584-617` (`Commitment.sendCommit`),
+  `:106-143` (`LocalCommit.fromCommitSig`, re-derives the verification nonce at `:142`),
+  `:911-946` (`receiveCommit`, publishes next nonce at `:940`) — **[P]**, all routed through the
+  two seam signing methods.
+
+**Reconnection / retransmit**
+- `channel/states/Channel.kt:305-315,342-365,422-426`, `channel/states/Syncing.kt:519-520`,
+  `channel/states/WaitForFundingSigned.kt:171` — **[P]** verification-nonce re-derivation. Must
+  produce bit-identical nonces after a restart; this is why round one being a pure function of
+  `sid` matters.
+
+**Force-close**
+- `channel/Commitments.kt:282-299` (`fullySignedCommitTx`) — **[P]**, seam-covered.
+- `Commitments.kt:303-308,1178`, `channel/Helpers.kt:552,756` — pubkey only.
+- Everything else (HTLC, delayed, penalty, anchors) — commitment keys, untouched.
+
+**Mutual close (taproot)**
+- `channel/Helpers.kt:314-340` (closer), `:390-440` (closee), `:479-500` (finalize) — **[P]**
+  partial signs; nonce TLVs already on the wire. Route through the seam as in eclair's plan.
+
+**Splice**
+- `channel/InteractiveTx.kt:44-60` (shared-input partial sign of the *previous* funding output),
+  `states/Normal.kt:423,470` (pubkey rotation) — **[P]**; blocked by `requireIndexZero` until
+  routed.
+
+**Channel announcement** — does not exist in lightning-kmp.
+
+## Build and platform notes
+
+- lightning-kmp pins `fr.acinq.secp256k1:secp256k1-kmp-jni-jvm:0.23.0` in `jvmMain`
+  (`modules/core/build.gradle.kts:115`, version in `gradle/libs.versions.toml:7`) — the exact
+  version of the vendored fork at `sources/secp256k1-kmp`, whose `Iceberg` object
+  (`jni/src/main/kotlin/fr/acinq/secp256k1/Iceberg.kt`) is deliberately JVM-only. So the seam
+  interface must live in `commonMain` and the Iceberg implementation in `jvmMain`; channel logic
+  (all in `commonMain`) never names the JNI API.
+- The port therefore needs the locally built secp256k1-kmp fork artifacts published to the local
+  Maven repository, same as the eclair build. Give the rebuilt artifacts a distinct version
+  (e.g. `0.23.0-iceberg`) rather than shadowing `0.23.0` — the eclair fork shadows the upstream
+  version and a pristine `~/.m2` then fails late (at the first JNI call) instead of at resolution
+  time. Don't repeat that.
+- Targets: `jvm` (also serving Android), `linuxX64/Arm64`, and on macOS hosts `iosX64/Arm64/
+  SimulatorArm64`. The port supports **JVM only**; native/iOS would need new cinterop bindings
+  against the C module at `sources/secp256k1-kmp/native/secp256k1/src/modules/iceberg/` — possible
+  (the C is there) but new work, and irrelevant for a benchmark harness since `commonTest` runs on
+  `jvmTest`.
+- `Iceberg.requireConfig` enforces `1 <= t <= (n+1)/2`, `n <= 10` — note that 2-of-2 and 3-of-4
+  are NOT expressible; violating the check aborts the JVM inside the C module, so check first.
+
+## Testing plan
+
+Mirrors the eclair harness, all runnable in `commonTest` on the JVM:
+
+1. **Session spec** (port of `IcebergTaprootSessionSpec`): a group partial signature must combine
+   with a stock counterparty under `musig2Aggregate` key order + BIP341 tweak, with the script
+   interpreter (`correctlySpends`) as the final judge, plus a negative control (untweaked session
+   must fail).
+2. **Channel spec** (port of `IcebergChannelSpec`): inject signers via
+   `TestsHelper.init` (`commonTest/.../channel/TestsHelper.kt:194`) by overriding the key managers
+   in `TestConstants` (`tests/TestConstants.kt:62,111`), then open a taproot channel, make
+   payments both directions, force-close, and verify the commitment tx spends on-chain. Assert the
+   exact signer-call count per payment if the eclair parity check ("exactly six") is wanted.
+3. **Seam spec**: a private-key-backed signer must be byte-for-byte upstream behaviour; the
+   existing state-machine suite (`states/*TestsCommon.kt`, `CommitmentsTestsCommon.kt`,
+   `NonceGeneratorTestsCommon.kt`) should pass unmodified with the default signer, which is the
+   regression proof that the seam changes nothing for stock channels.
+4. **Reconnect spec**: restart mid-channel and confirm verification nonces re-derive identically.
+
+## Explicit exclusions
+
+- **Splicing** — defer; block loudly at first (one `require`), route later for ~+1 week.
+- **Native/iOS** — JVM-only for the benchmark.
+- **Production deployment** — this estimate is for an in-process simulated group holding all
+  shares in one JVM, exactly like the eclair fork. A real deployment (distributed members, a
+  signing protocol over the wire, persistence of in-flight signing sessions, HSM/KMS integration)
+  is a different and much larger project; nothing here is a down payment on it beyond the seam.
+- **The known establishment-v1 nonce double-use** (one deterministic nonce identity signs both the
+  peer's first commit tx in the open flow and our own first commit tx when finalizing) is upstream
+  behaviour on an experimental channel type in eclair; check whether lightning-kmp shares it before
+  relying on nonce-reuse arguments in either codebase. It is documented in the eclair review and
+  in `FundingSigner.scala`'s `VerificationNonceId.firstSingleFunded` comment.
+
