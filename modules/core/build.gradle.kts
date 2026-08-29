@@ -326,3 +326,28 @@ tasks
     .map {
         it.filter.excludeTestsMatching("*MempoolSpace*Test")
     }
+
+/**
+ * Runs the Iceberg per-payment cost measurement (jvmTest classpath: the runner uses the channel
+ * test harness). NOT a test: it is a timing measurement and must run alone on the machine.
+ *
+ *     ./gradlew :lightning-kmp-core:icebergMeasurement \
+ *         -Piceberg.out=/path/to/output-dir \
+ *         -Diceberg.iterations=1500 -Diceberg.grid=full
+ *
+ * Output dir defaults to <benchmark repo>/outputs/<timestamp>-lightning-kmp-cost-per-payment when
+ * -Piceberg.out is not given (the runner walks up from the working directory looking for PINS.txt).
+ */
+tasks.register<JavaExec>("icebergMeasurement") {
+    group = "verification"
+    description = "Measures the per-payment cost of an Iceberg group-backed funding signer (see ICEBERG-PORT.md)."
+    val testCompilation = kotlin.targets.getByName("jvm").compilations.getByName("test")
+    dependsOn(testCompilation.compileTaskProvider)
+    classpath = files(testCompilation.output.allOutputs) + testCompilation.runtimeDependencyFiles
+    mainClass.set("fr.acinq.lightning.iceberg.IcebergCycleMeasurementRun")
+    // Pass through the measurement's system properties.
+    System.getProperties().stringPropertyNames().filter { it.startsWith("iceberg.") }.forEach { systemProperty(it, System.getProperty(it)) }
+    if (project.hasProperty("iceberg.out")) args(project.property("iceberg.out"))
+    // A timing measurement wants a stable heap: fixed size, no resize pauses.
+    jvmArgs("-Xms4g", "-Xmx4g")
+}
