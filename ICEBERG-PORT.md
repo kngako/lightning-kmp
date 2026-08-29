@@ -296,8 +296,9 @@ Layout of the implementation:
 
 ## Remaining work (2026-08-29)
 
-The port above is complete and verified, but it is the channel, not yet the measurement, and one
-feature is deliberately blocked rather than routed. In order of the original estimate's table:
+The port and its measurement harness are complete and verified; what remains is splice routing
+(deliberately blocked rather than routed), the report/pipeline integration of the lightning-kmp
+numbers, and some coverage gaps. In order:
 
 ### Splice routing (deferred, ~1 week)
 
@@ -326,22 +327,40 @@ sessions can never collide across the old and new funding transactions.
 
 ### The measurement harness (the point of the exercise)
 
-The eclair fork pairs its channel spec with `IcebergCycleMeasurementRun`, which times each group
-operation per payment cycle and writes the numbers the report is built from. The lightning-kmp side
-has the instrumentation but not the run:
+**Done 2026-08-29** (inner-repo commit `e995295a`): the paired measurement exists and has run.
 
-- `CountingFundingSigner` (`jvmTest/.../iceberg/IcebergChannelTestsJvm.kt:278`) counts, per seam
-  method, what one payment costs in group operations, and the channel spec asserts the count does
-  not grow with the commit index. The mapping to rounds is documented on the class: every method
-  enters round one; only the signing methods reach round two; `signWithVerificationNonce`'s round
-  one re-derives a nonce an earlier `verificationNonce` already published (the redundancy a cache
-  would remove).
-- What is missing is the `TimingFundingSigner` equivalent (eclair implements it by overriding the
-  counting wrapper's record hook to also time the call) and a runnable that opens a group-backed
-  channel, runs N payment cycles at the configurations the paper reports (2-of-4, 3-of-7), and
-  writes per-call timings to `outputs/` in a form `scripts/compare_runs.py` and the report can
-  consume. The pure-C per-operation costs (`bench/api_reference.c`) already exist and are shared
-  with eclair; the channel-level measurement is the missing layer.
+- `CountingFundingSigner` (`jvmTest/.../iceberg/CountingFundingSigner.kt`) counts, per seam method,
+  what one payment costs in group operations, with the counters routed through an overridable
+  `record` hook. The mapping to rounds is documented on the class: every method enters round one;
+  only the signing methods reach round two; `signWithVerificationNonce`'s round one re-derives a
+  nonce an earlier `verificationNonce` already published (the redundancy a cache would remove).
+- `IcebergCycleMeasurementRun` (`jvmTest/.../iceberg/IcebergCycleMeasurementRun.kt`, run via the
+  `:lightning-kmp-core:icebergMeasurement` Gradle task, or `scripts/measure_lightning_kmp.sh` in
+  the benchmark repository) opens a bare channel and a group-backed channel, pays on both per
+  iteration (counterbalanced), and computes the per-iteration delta. `TimingFundingSigner` times
+  the seam calls of both arms. Statistics are the eclair side's verbatim (Bessel-corrected stddev,
+  nearest-rank percentiles, lag-1 autocorrelation widening the iid 95% CI by sqrt((1+r)/(1-r))).
+  Output matches the pipeline's contract: `cost_per_payment.csv` (readable by
+  `scripts/compare_runs.py` as-is), `paired_samples.csv`, the `cycle_stages_*.csv` splits,
+  `provenance.txt`, a generated README, and a COMPLETE marker; the run is registered in
+  `outputs/runs.json` under the `lightning-kmp-cost-per-payment` label.
+- First full run: `outputs/2026-08-29-091030-lightning-kmp-cost-per-payment` (all 20 legal
+  configurations, 1500 paired iterations each). Headline: 2-of-4 adds 1799 µs/payment (ci95 29 µs,
+  17.7% of the bare cycle), 3-of-7 adds 4021 µs (ci95 20 µs, 39.6%), and the residual after
+  subtracting the measured signer crypto is 30-172 µs -- the added cost is almost entirely the
+  signer swap, as it should be. The paired stage split at 3-of-7 lands the entire delta in the two
+  cross_sign stages, exactly where the signing happens. One payment costs the group 6 seam calls:
+  6 round-ones (nonce derivations) and 2 round-twos (signatures), matching the eclair count.
+- One honest cross-implementation caveat: `scripts/compare_runs.py` shows the two harnesses do NOT
+  agree within intervals (lightning-kmp's deltas are ~68% lower in raw microseconds, and the
+  machine-invariant ratio misses by 6-15% at the headline configurations). The reason is visible in
+  the data: eclair's bare crypto costs ~1650 µs/payment against lightning-kmp's ~643 µs -- each
+  stack's single-signer path has very different per-call overhead (scala wrappers vs direct
+  calls), and the paired delta inherits that difference. The two numbers answer the same question
+  relative to two different baselines; neither is wrong.
+- What remains: a summariser (the existing `summarise_measurement.py` is deeply hardcoded to the
+  eclair experiment), a section of `docs/report.html` for the lightning-kmp numbers (the
+  `data-from` machinery is generic; the prose is not), and the docker stage below.
 
 ### Repository integration (bookkeeping this port created)
 
