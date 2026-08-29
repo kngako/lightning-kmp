@@ -293,3 +293,85 @@ Layout of the implementation:
   (private-key signer byte-for-byte upstream behaviour + poison pill). Signer injection in tests is
   `SignerInjectingKeyManager` (commonTest), threaded through `TestsHelper.init`/`reachNormal` via
   optional `aliceFundingSigner`/`bobFundingSigner` parameters.
+
+## Remaining work (2026-08-29)
+
+The port above is complete and verified, but it is the channel, not yet the measurement, and one
+feature is deliberately blocked rather than routed. In order of the original estimate's table:
+
+### Splice routing (deferred, ~1 week)
+
+Currently blocked loudly, exactly as planned: `SpliceInit`/`SpliceAck` derive the funding key at
+index n+1 (`states/Normal.kt:424,471`), which hits the injected-signer index-0 guard in
+`ChannelKeys.fundingPublicKey`/`fundingSigner`, and the shared-input signing of the previous funding
+output (`channel/InteractiveTx.kt:49`) goes through the `privateKey` escape hatch, which a threshold
+signer refuses by name. Unblocking it takes two things:
+
+1. **A funding-nonce session.** The interactive-tx funding nonce is created when the session starts
+   (`InteractiveTx.kt:739-742`), published in `tx_complete`'s funding-nonce TLV, and consumed when
+   the shared transaction is finally signed -- published before the transaction it signs exists,
+   exactly like the mutual-close closee nonce. It therefore needs the same treatment: a session
+   abstraction analogous to `FundingSigner.CloseeNonceSession` (for a threshold signer, a random
+   32-byte label with round one re-derived at signing time). The `CloseeNonceSession` machinery is
+   the template; the sessions differ only in which wire message carries the nonce.
+2. **Key rotation at index n+1.** An injected signer carries one key. The cheap option, noted in the
+   plan, is to serve the SAME group key at every index (the funding output's local key no longer
+   rotates on splice; acceptable for a benchmark, and it keeps `requireIndexZero` removed rather
+   than relaxed). Rotating to a genuinely fresh key per splice is a real deployment concern, not a
+   benchmark one.
+
+The verification-nonce side needs nothing: the nonce identity is
+`(fundingTxId, remoteFundingPubKey, commitIndex)`, and a splice changes the funding txid, so
+sessions can never collide across the old and new funding transactions.
+
+### The measurement harness (the point of the exercise)
+
+The eclair fork pairs its channel spec with `IcebergCycleMeasurementRun`, which times each group
+operation per payment cycle and writes the numbers the report is built from. The lightning-kmp side
+has the instrumentation but not the run:
+
+- `CountingFundingSigner` (`jvmTest/.../iceberg/IcebergChannelTestsJvm.kt:278`) counts, per seam
+  method, what one payment costs in group operations, and the channel spec asserts the count does
+  not grow with the commit index. The mapping to rounds is documented on the class: every method
+  enters round one; only the signing methods reach round two; `signWithVerificationNonce`'s round
+  one re-derives a nonce an earlier `verificationNonce` already published (the redundancy a cache
+  would remove).
+- What is missing is the `TimingFundingSigner` equivalent (eclair implements it by overriding the
+  counting wrapper's record hook to also time the call) and a runnable that opens a group-backed
+  channel, runs N payment cycles at the configurations the paper reports (2-of-4, 3-of-7), and
+  writes per-call timings to `outputs/` in a form `scripts/compare_runs.py` and the report can
+  consume. The pure-C per-operation costs (`bench/api_reference.c`) already exist and are shared
+  with eclair; the channel-level measurement is the missing layer.
+
+### Repository integration (bookkeeping this port created)
+
+- `PINS.txt` does not mention lightning-kmp. It should record the upstream base
+  (ACINQ/lightning-kmp master `db0674bd`) plus the port commits (`92f41b90..9abec431` in the
+  embedded repository), with the same "not fetchable yet" caveat the eclair fork carries: the port
+  commits exist only in this tree.
+- `sources/README.md` likewise needs a table row, and should explain that unlike the other three
+  trees, lightning-kmp's "source of truth" history lives in the embedded git repository, which is
+  not published with the file copy.
+- `scripts/check_vendor_sync.sh` does not cover lightning-kmp. The other trees are compared against
+  sibling checkouts that development happens in; lightning-kmp IS its own live checkout (the
+  embedded repo at `sources/lightning-kmp/.git`), so there is nothing to sync against -- the script
+  should either say so explicitly or gain a different rule for it.
+- `docker/run.sh` has no lightning-kmp stage: it builds secp256k1-kmp and bitcoin-kmp, publishes
+  them, and builds/tests/measures eclair. A clone-and-docker run never compiles this port. A stage
+  would publish the fork as `0.23.0-iceberg` into the container's Maven repository via
+  `publish-iceberg-secp256k1.sh`, run the suites (`gradlew :lightning-kmp-core:jvmTest`), and then
+  the measurement run above. `REPRODUCING.md` needs the matching line once that exists.
+
+### Test coverage gaps
+
+- RBF and zero-conf with an injected signer work by construction (both keep funding index 0, so the
+  index guard never fires) but have no group-backed test.
+- The splice block is tested at the `ChannelKeys` level (the guard throws for index != 0), not by
+  driving a splice command into a group-backed channel and watching it fail.
+
+### Explicitly still out of scope
+
+Unchanged from the plan: native/iOS targets (possible -- the C module is there -- but new cinterop
+work, and irrelevant to a JVM benchmark), and anything resembling production deployment
+(distributed members, a signing protocol over the wire, persistence of in-flight signing sessions,
+HSM/KMS integration). Nothing here is a down payment on those beyond the seam itself.
