@@ -1,7 +1,9 @@
 # Porting Iceberg threshold signing to lightning-kmp
 
 Date: 2026-08-27
-Status: estimate / plan. No code here is modified; this document only describes the work.
+Status: **implemented** (2026-08-29). The plan below was carried out as written; see
+"Implementation notes" at the end for what actually happened, including two places where
+lightning-kmp differed from what the plan assumed.
 
 ## What this is
 
@@ -245,3 +247,49 @@ Mirrors the eclair harness, all runnable in `commonTest` on the JVM:
   relying on nonce-reuse arguments in either codebase. It is documented in the eclair review and
   in `FundingSigner.scala`'s `VerificationNonceId.firstSingleFunded` comment.
 
+## Implementation notes (2026-08-29)
+
+The port was carried out as planned above. Where reality differed from the plan:
+
+- **The establishment-v1 nonce double-use does not exist here.** lightning-kmp only has the
+  dual-funded flow, in which the funding txid and the peer's funding key are both known before the
+  first verification nonce is published (in `tx_complete`): `VerificationNonceId` never carries
+  placeholder values, so `FundingSigner.VerificationNonceId.firstSingleFunded` has no counterpart.
+- **Mutual close needed one seam concept eclair did not have.** The closee's nonce is published in
+  `shutdown` before the transaction it will sign exists, so it can be neither a fresh in-call nonce
+  nor a commitment-indexed deterministic one (a retried negotiation could pair it with two different
+  closing transactions). The seam therefore has `closeeNonce` / `signWithCloseeNonce` with an opaque
+  `CloseeNonceSession` carried by the state machine exactly where `Transactions.LocalNonce` used to
+  sit (in-memory only, dropped on disconnection, never persisted -- the binary serializers already
+  discard it). For `PrivateKeyFundingSigner` the session wraps the existing `LocalNonce`; for
+  `IcebergFundingSigner` it is just the 32-byte session label, round one being re-derived from it.
+- **The fork artifacts are published as `0.23.0-iceberg`** (see `publish-iceberg-secp256k1.sh` at the
+  repository root of this tree), not shadowing `0.23.0`. One wrinkle: Gradle ranks `0.23.0` *above*
+  `0.23.0-iceberg`, so upstream's artifacts would silently win version resolution against the fork;
+  `modules/core/build.gradle.kts` therefore depends on the three fork artifacts directly (not the
+  `secp256k1-kmp-jni-jvm` aggregator), excludes the transitive secp256k1 deps of the darwin/mingw
+  natives, and `force`s the three fork versions. On macOS/Windows the stock native library is used
+  and Iceberg calls fail loudly with `UnsatisfiedLinkError`; the benchmark targets JVM/linux.
+- **Splice is blocked** exactly as planned: `ChannelKeys.fundingPublicKey`/`fundingSigner` throw for
+  any index other than 0 when a signer is injected, which is where `SpliceInit`/`SpliceAck` and the
+  shared-input signing hit it.
+
+Layout of the implementation:
+
+- `modules/core/src/commonMain/kotlin/fr/acinq/lightning/crypto/FundingSigner.kt` -- the seam
+  (`FundingSigner`, `VerificationNonceId`, `CloseeNonceSession`, `PrivateKeyFundingSigner`).
+- `modules/core/src/commonMain/kotlin/fr/acinq/lightning/crypto/KeyManager.kt` -- `ChannelKeys`
+  gains the injected signer, the poison-pill `fundingKey`, `fundingPublicKey`, `fundingSigner`,
+  `withFundingSigner`, and the index-0 splice guard.
+- `modules/core/src/jvmMain/kotlin/fr/acinq/lightning/crypto/IcebergSigner.kt` -- `IcebergGroup`,
+  `IcebergSigner` (keygen/round one/round two/keyagg cache/cosigner aggnonce) and
+  `IcebergFundingSigner`, over the JNI `Iceberg` object. The key aggregation cache and BIP341 tweak
+  are built with bitcoin-kmp's public `KeyAggCache` API, so no JNI musig calls are needed.
+- Tests: `jvmTest/.../crypto/IcebergTaprootSessionTestsJvm.kt` (session pinned end to end, both key
+  orderings, untweaked negative control), `jvmTest/.../iceberg/IcebergChannelTestsJvm.kt` (open both
+  sides, payments both directions, nonce progression over ten payments, reconnect with re-derived
+  nonces, mutual close as closer and as closee, force-close, splice guard, per-payment operation
+  counts via `CountingFundingSigner`), and `commonTest/.../crypto/FundingSignerTestsCommon.kt`
+  (private-key signer byte-for-byte upstream behaviour + poison pill). Signer injection in tests is
+  `SignerInjectingKeyManager` (commonTest), threaded through `TestsHelper.init`/`reachNormal` via
+  optional `aliceFundingSigner`/`bobFundingSigner` parameters.
