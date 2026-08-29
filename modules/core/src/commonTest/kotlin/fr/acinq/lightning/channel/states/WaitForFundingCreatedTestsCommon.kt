@@ -9,6 +9,7 @@ import fr.acinq.lightning.MilliSatoshi
 import fr.acinq.lightning.blockchain.electrum.WalletState
 import fr.acinq.lightning.blockchain.fee.FeeratePerKw
 import fr.acinq.lightning.channel.*
+import fr.acinq.lightning.crypto.FundingSigner
 import fr.acinq.lightning.tests.TestConstants
 import fr.acinq.lightning.tests.utils.LightningTestSuite
 import fr.acinq.lightning.tests.utils.runSuspendTest
@@ -307,9 +308,11 @@ class WaitForFundingCreatedTestsCommon : LightningTestSuite() {
             bobFundingAmount: Satoshi = TestConstants.bobFundingAmount,
             requestRemoteFunding: Satoshi? = null,
             zeroConf: Boolean = false,
-            channelOrigin: Origin? = null
+            channelOrigin: Origin? = null,
+            aliceFundingSigner: FundingSigner? = null,
+            bobFundingSigner: FundingSigner? = null
         ): Fixture {
-            val (a, b, open) = TestsHelper.init(channelType, aliceFeatures, bobFeatures, bobUsePeerStorage, currentHeight, aliceFundingAmount, bobFundingAmount, requestRemoteFunding, zeroConf, channelOrigin)
+            val (a, b, open) = TestsHelper.init(channelType, aliceFeatures, bobFeatures, bobUsePeerStorage, currentHeight, aliceFundingAmount, bobFundingAmount, requestRemoteFunding, zeroConf, channelOrigin, aliceFundingSigner, bobFundingSigner)
             val (b1, actions) = b.process(ChannelCommand.MessageReceived(open))
             val accept = actions.findOutgoingMessage<AcceptDualFundedChannel>()
             assertIs<LNChannel<WaitForFundingCreated>>(b1)

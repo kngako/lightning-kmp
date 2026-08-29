@@ -12,6 +12,8 @@ import fr.acinq.lightning.blockchain.fee.FeeratePerKw
 import fr.acinq.lightning.blockchain.fee.OnChainFeerates
 import fr.acinq.lightning.channel.states.*
 import fr.acinq.lightning.crypto.ChannelKeys
+import fr.acinq.lightning.crypto.FundingSigner
+import fr.acinq.lightning.crypto.SignerInjectingKeyManager
 import fr.acinq.lightning.crypto.KeyManager
 import fr.acinq.lightning.db.ChannelCloseOutgoingPayment.ChannelClosingType
 import fr.acinq.lightning.json.JsonSerializers
@@ -201,7 +203,9 @@ object TestsHelper {
         bobFundingAmount: Satoshi = TestConstants.bobFundingAmount,
         requestRemoteFunding: Satoshi? = null,
         zeroConf: Boolean = false,
-        channelOrigin: Origin? = null
+        channelOrigin: Origin? = null,
+        aliceFundingSigner: FundingSigner? = null,
+        bobFundingSigner: FundingSigner? = null
     ): Triple<LNChannel<WaitForAcceptChannel>, LNChannel<WaitForOpenChannel>, OpenDualFundedChannel> {
         val (aliceNodeParams, bobNodeParams) = when (zeroConf) {
             true -> Pair(
@@ -211,6 +215,14 @@ object TestsHelper {
             false -> Pair(
                 TestConstants.Alice.nodeParams.copy(features = aliceFeatures, usePeerStorage = false),
                 TestConstants.Bob.nodeParams.copy(features = bobFeatures, usePeerStorage = bobUsePeerStorage)
+            )
+        }.let { (alice, bob) ->
+            // When a side's funding key is held by an injected signer (e.g. an Iceberg group), every
+            // channelKeys() call for that node must carry it, including the ones made deep inside the
+            // channel state machine.
+            Pair(
+                aliceFundingSigner?.let { alice.copy(keyManager = SignerInjectingKeyManager(alice.keyManager, it)) } ?: alice,
+                bobFundingSigner?.let { bob.copy(keyManager = SignerInjectingKeyManager(bob.keyManager, it)) } ?: bob
             )
         }
         val alice = LNChannel(
@@ -297,6 +309,8 @@ object TestsHelper {
         bobFundingAmount: Satoshi = TestConstants.bobFundingAmount,
         requestRemoteFunding: Satoshi? = null,
         zeroConf: Boolean = false,
+        aliceFundingSigner: FundingSigner? = null,
+        bobFundingSigner: FundingSigner? = null,
     ): Triple<LNChannel<Normal>, LNChannel<Normal>, TxId> {
         val (alice, channelReadyAlice, bob, channelReadyBob) = WaitForChannelReadyTestsCommon.init(
             channelType,
@@ -307,7 +321,9 @@ object TestsHelper {
             aliceFundingAmount,
             bobFundingAmount,
             requestRemoteFunding,
-            zeroConf
+            zeroConf,
+            aliceFundingSigner,
+            bobFundingSigner
         )
         val (alice1, actionsAlice1) = alice.process(ChannelCommand.MessageReceived(channelReadyBob))
         assertIs<LNChannel<Normal>>(alice1)
@@ -515,7 +531,7 @@ object TestsHelper {
 
     fun useAlternativeCommitSig(s: LNChannel<ChannelState>, commitment: Commitment, feerate: FeeratePerKw): Transaction {
         val channelKeys = s.commitments.channelKeys(s.ctx.keyManager)
-        val fundingKey = commitment.localFundingKey(channelKeys)
+        val localFundingPubkey = commitment.localFundingPubkey(channelKeys)
         val commitKeys = channelKeys.localCommitmentKeys(s.commitments.channelParams, commitment.localCommit.index)
         val alternativeSpec = commitment.localCommit.spec.copy(feerate = feerate)
         val remoteFundingPubKey = commitment.remoteFundingPubkey
@@ -525,9 +541,9 @@ object TestsHelper {
             commitParams = commitment.localCommitParams,
             commitKeys = commitKeys,
             commitTxNumber = commitment.localCommit.index,
-            localFundingKey = fundingKey,
+            localFundingPubkey = localFundingPubkey,
             remoteFundingPubKey = remoteFundingPubKey,
-            commitmentInput = commitment.commitInput(fundingKey),
+            commitmentInput = commitment.commitInput(localFundingPubkey),
             commitmentFormat = commitment.commitmentFormat,
             spec = alternativeSpec,
         )

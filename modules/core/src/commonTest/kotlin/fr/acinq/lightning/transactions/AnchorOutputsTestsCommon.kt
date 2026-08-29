@@ -129,7 +129,7 @@ class AnchorOutputsTestsCommon {
             localCommitParams,
             localCommitmentKeys,
             42,
-            local_funding_privkey,
+            local_funding_privkey.publicKey(),
             remote_funding_pubkey,
             Transactions.InputInfo(OutPoint(funding_tx, 0), funding_tx.txOut[0]),
             Transactions.CommitmentFormat.AnchorOutputs,

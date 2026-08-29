@@ -11,6 +11,7 @@ import fr.acinq.lightning.blockchain.WatchSpentTriggered
 import fr.acinq.lightning.blockchain.electrum.WalletState
 import fr.acinq.lightning.blockchain.fee.FeeratePerKw
 import fr.acinq.lightning.channel.*
+import fr.acinq.lightning.crypto.FundingSigner
 import fr.acinq.lightning.tests.TestConstants
 import fr.acinq.lightning.tests.utils.LightningTestSuite
 import fr.acinq.lightning.tests.utils.runSuspendTest
@@ -404,6 +405,8 @@ class WaitForFundingConfirmedTestsCommon : LightningTestSuite() {
             aliceFundingAmount: Satoshi = TestConstants.aliceFundingAmount,
             bobFundingAmount: Satoshi = TestConstants.bobFundingAmount,
             requestRemoteFunding: Satoshi? = null,
+            aliceFundingSigner: FundingSigner? = null,
+            bobFundingSigner: FundingSigner? = null,
         ): Fixture {
             val (alice, commitAlice, bob, commitBob, walletAlice) = WaitForFundingSignedTestsCommon.init(
                 channelType,
@@ -414,7 +417,9 @@ class WaitForFundingConfirmedTestsCommon : LightningTestSuite() {
                 aliceFundingAmount,
                 bobFundingAmount,
                 requestRemoteFunding,
-                zeroConf = false
+                zeroConf = false,
+                aliceFundingSigner = aliceFundingSigner,
+                bobFundingSigner = bobFundingSigner
             )
             val (alice1, actionsAlice1) = alice.process(ChannelCommand.MessageReceived(commitBob))
             assertIs<WaitForFundingSigned>(alice1.state)

@@ -10,6 +10,7 @@ import fr.acinq.lightning.blockchain.WatchConfirmedTriggered
 import fr.acinq.lightning.blockchain.WatchSpent
 import fr.acinq.lightning.blockchain.WatchSpentTriggered
 import fr.acinq.lightning.channel.*
+import fr.acinq.lightning.crypto.FundingSigner
 import fr.acinq.lightning.tests.TestConstants
 import fr.acinq.lightning.tests.utils.LightningTestSuite
 import fr.acinq.lightning.tests.utils.runSuspendTest
@@ -179,9 +180,11 @@ class WaitForChannelReadyTestsCommon : LightningTestSuite() {
             bobFundingAmount: Satoshi = TestConstants.bobFundingAmount,
             requestRemoteFunding: Satoshi? = null,
             zeroConf: Boolean = false,
+            aliceFundingSigner: FundingSigner? = null,
+            bobFundingSigner: FundingSigner? = null,
         ): Fixture {
             return if (zeroConf) {
-                val (alice, commitAlice, bob, commitBob) = WaitForFundingSignedTestsCommon.init(channelType, aliceFeatures, bobFeatures, bobUsePeerStorage, currentHeight, aliceFundingAmount, bobFundingAmount, requestRemoteFunding, zeroConf)
+                val (alice, commitAlice, bob, commitBob) = WaitForFundingSignedTestsCommon.init(channelType, aliceFeatures, bobFeatures, bobUsePeerStorage, currentHeight, aliceFundingAmount, bobFundingAmount, requestRemoteFunding, zeroConf, aliceFundingSigner = aliceFundingSigner, bobFundingSigner = bobFundingSigner)
                 val (alice1, actionsAlice1) = alice.process(ChannelCommand.MessageReceived(commitBob))
                 assertIs<LNChannel<WaitForFundingSigned>>(alice1)
                 assertTrue(actionsAlice1.isEmpty())
@@ -198,7 +201,7 @@ class WaitForChannelReadyTestsCommon : LightningTestSuite() {
                 actionsAlice2.has<ChannelAction.Storage.StoreState>()
                 Fixture(alice2, channelReadyAlice, bob1, channelReadyBob)
             } else {
-                val (alice, bob, fundingTx) = WaitForFundingConfirmedTestsCommon.init(channelType, aliceFeatures, bobFeatures, bobUsePeerStorage, currentHeight, aliceFundingAmount, bobFundingAmount, requestRemoteFunding)
+                val (alice, bob, fundingTx) = WaitForFundingConfirmedTestsCommon.init(channelType, aliceFeatures, bobFeatures, bobUsePeerStorage, currentHeight, aliceFundingAmount, bobFundingAmount, requestRemoteFunding, aliceFundingSigner, bobFundingSigner)
                 val (alice1, actionsAlice1) = alice.process(ChannelCommand.WatchReceived(WatchConfirmedTriggered(alice.channelId, WatchConfirmed.ChannelFundingDepthOk, 42, 0, fundingTx)))
                 assertIs<LNChannel<WaitForChannelReady>>(alice1)
                 val channelReadyAlice = actionsAlice1.findOutgoingMessage<ChannelReady>()
