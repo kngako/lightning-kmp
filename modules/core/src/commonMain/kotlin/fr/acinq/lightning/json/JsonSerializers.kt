@@ -26,6 +26,7 @@
     JsonSerializers.IndividualNonceSerializer::class,
     JsonSerializers.PartialSignatureWithNonceSerializer::class,
     JsonSerializers.LocalNonceSerializer::class,
+    JsonSerializers.CloseeNonceSessionSerializer::class,
     JsonSerializers.TxIdSerializer::class,
     JsonSerializers.KeyPathSerializer::class,
     JsonSerializers.SatoshiSerializer::class,
@@ -124,6 +125,7 @@ import fr.acinq.lightning.blockchain.fee.FeeratePerKw
 import fr.acinq.lightning.channel.*
 import fr.acinq.lightning.channel.InteractiveTxSigningSession.Companion.UnsignedLocalCommit
 import fr.acinq.lightning.channel.states.*
+import fr.acinq.lightning.crypto.FundingSigner
 import fr.acinq.lightning.crypto.RouteBlinding
 import fr.acinq.lightning.crypto.ShaChain
 import fr.acinq.lightning.payment.Bolt11Invoice
@@ -443,6 +445,7 @@ object JsonSerializers {
     object IndividualNonceSerializer : StringSerializer<IndividualNonce>()
     object PartialSignatureWithNonceSerializer : StringSerializer<ChannelSpendSignature.PartialSignatureWithNonce>()
     object LocalNonceSerializer : StringSerializer<Transactions.LocalNonce>()
+    object CloseeNonceSessionSerializer : StringSerializer<FundingSigner.CloseeNonceSession>({ it.publicNonce.toString() })
     object TxIdSerializer : StringSerializer<TxId>()
     object KeyPathSerializer : StringSerializer<KeyPath>()
     object ShortChannelIdSerializer : StringSerializer<ShortChannelId>()

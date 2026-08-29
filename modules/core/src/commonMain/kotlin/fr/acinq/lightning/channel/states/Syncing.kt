@@ -7,7 +7,7 @@ import fr.acinq.lightning.blockchain.WatchConfirmed
 import fr.acinq.lightning.blockchain.WatchConfirmedTriggered
 import fr.acinq.lightning.blockchain.WatchSpentTriggered
 import fr.acinq.lightning.channel.*
-import fr.acinq.lightning.crypto.NonceGenerator
+import fr.acinq.lightning.crypto.FundingSigner
 import fr.acinq.lightning.utils.toByteVector
 import fr.acinq.lightning.wire.*
 
@@ -516,9 +516,8 @@ data class Syncing(val state: PersistedChannelState, val channelReestablishSent:
                 val localPerCommitmentSecret = channelKeys.commitmentSecret(commitments.localCommitIndex - 1)
                 val localNextPerCommitmentPoint = channelKeys.commitmentPoint(commitments.localCommitIndex + 1)
                 val localNextCommitNonces = commitments.active.map { c ->
-                    val fundingKey = channelKeys.fundingKey(c.fundingTxIndex)
-                    val nonce = NonceGenerator.verificationNonce(c.fundingTxId, fundingKey, c.remoteFundingPubkey, commitments.localCommitIndex + 1)
-                    c.fundingTxId to nonce.publicNonce
+                    val nonce = channelKeys.fundingSigner(c.fundingTxIndex).verificationNonce(FundingSigner.VerificationNonceId(c.fundingTxId, c.remoteFundingPubkey, commitments.localCommitIndex + 1))
+                    c.fundingTxId to nonce
                 }
                 val revocation = RevokeAndAck(
                     channelId = commitments.channelId,

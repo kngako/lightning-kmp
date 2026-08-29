@@ -9,6 +9,7 @@ import fr.acinq.lightning.blockchain.WatchConfirmed
 import fr.acinq.lightning.blockchain.WatchConfirmedTriggered
 import fr.acinq.lightning.blockchain.WatchSpentTriggered
 import fr.acinq.lightning.channel.*
+import fr.acinq.lightning.crypto.FundingSigner
 import fr.acinq.lightning.transactions.Transactions
 import fr.acinq.lightning.utils.*
 import fr.acinq.lightning.wire.*
@@ -23,7 +24,7 @@ data class Normal(
     val localShutdown: Shutdown?,
     val remoteShutdown: Shutdown?,
     val closeCommand: ChannelCommand.Close.MutualClose?,
-    val localCloseeNonce: Transactions.LocalNonce?,
+    val localCloseeNonce: FundingSigner.CloseeNonceSession?,
 ) : ChannelStateWithCommitments() {
 
     override fun updateCommitments(input: Commitments): ChannelStateWithCommitments = this.copy(commitments = input)
@@ -420,7 +421,7 @@ data class Normal(
                                                 fundingContribution = fundingContribution,
                                                 lockTime = currentBlockHeight.toLong(),
                                                 feerate = spliceStatus.command.feerate,
-                                                fundingPubkey = channelKeys.fundingKey(parentCommitment.fundingTxIndex + 1).publicKey(),
+                                                fundingPubkey = channelKeys.fundingPublicKey(parentCommitment.fundingTxIndex + 1),
                                                 requestFunding = spliceStatus.command.requestRemoteFunding,
                                                 channelType = channelTypeUpgrade,
                                             )
@@ -467,7 +468,7 @@ data class Normal(
                                 val spliceAck = SpliceAck(
                                     channelId,
                                     fundingContribution = 0.sat, // only remote contributes to the splice
-                                    fundingPubkey = channelKeys.fundingKey(parentCommitment.fundingTxIndex + 1).publicKey(),
+                                    fundingPubkey = channelKeys.fundingPublicKey(parentCommitment.fundingTxIndex + 1),
                                     willFund = null,
                                     channelType = channelType
                                 )
