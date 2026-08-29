@@ -5,7 +5,11 @@ kotlinx-datetime = "0.7.1"
 kotlinx-serialization = "1.9.0"
 ktor = "3.4.1"
 bitcoinkmp = "0.31.0" # when upgrading bitcoin-kmp, keep secpjnijvm in sync!
-secpjnijvm = "0.23.0"
+# The Iceberg fork of secp256k1-kmp, published to the local Maven repository under a distinct
+# version by sources/lightning-kmp/publish-iceberg-secp256k1.sh (do NOT shadow upstream's 0.23.0).
+# darwin/mingw native libs stay on upstream 0.23.0: the fork only ships the linux natives.
+secpjnijvm = "0.23.0-iceberg"
+secpjnijvmupstream = "0.23.0"
 kermit = "2.0.8"
 slf4j = "2.0.17"
 

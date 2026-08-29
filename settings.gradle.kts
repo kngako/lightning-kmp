@@ -6,9 +6,10 @@ pluginManagement {
 
 dependencyResolutionManagement {
     repositories {
-        // using the local maven repository with Kotlin Multi Platform can lead to build errors that are hard to diagnose.
-        // uncomment this only if you need to experiment with snapshot dependencies that have not yet be published.
-        // mavenLocal()
+        // The Iceberg fork of secp256k1-kmp (0.23.0-iceberg) only exists in the local Maven
+        // repository: run publish-iceberg-secp256k1.sh once to install it there. It is only ever
+        // resolved by the JVM source sets, which is the safe way to use mavenLocal with KMP.
+        mavenLocal()
         mavenCentral()
         google()
         maven("https://central.sonatype.com/repository/maven-snapshots")
