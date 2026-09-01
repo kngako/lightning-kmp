@@ -17,6 +17,15 @@ dependencyResolutionManagement {
 
 rootProject.name = "lightning-kmp"
 
+// Use the local experimental bitcoin-kmp fork instead of the artifacts published on Maven Central.
+// This also recursively uses bitcoin-kmp's own secp256k1-kmp fork (included by bitcoin-kmp's build):
+// note that secp256k1-kmp cannot be included again here, Gradle deduplicates included builds by directory.
+includeBuild("experimental/bitcoin-kmp") {
+    dependencySubstitution {
+        substitute(module("fr.acinq.bitcoin:bitcoin-kmp")).using(project(":"))
+    }
+}
+
 include(":lightning-kmp-ios-crypto")
 include(":lightning-kmp-core")
 
