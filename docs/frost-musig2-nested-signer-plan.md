@@ -71,13 +71,46 @@ architecture — the iceberg module — so every nesting mechanic below has an i
    non-compliant nested scheme (decisions 1-3) lives behind its own opt-in flag, giving
    auditors a clean scope boundary; (b) the dependency graph stays honest — frost keeps
    depending only on schnorrsig instead of absorbing a musig dependency that every pure-FROST
-   consumer would have to build. The cost is new-module boilerplate everywhere iceberg is
-   listed: the CMake/configure.ac module blocks (prefractal force-enables frost AND musig,
-   mirroring `src/CMakeLists.txt:76-83` and `configure.ac:576-582`), `Makefile.am.include`,
-   include blocks in `src/secp256k1.c` (AFTER frost — the module relies on frost and musig
-   statics) and `src/tests.c`, one header line in `libsecp256k1.def`, one flag in
-   `native/build.gradle.kts`. `include/secp256k1_prefractal.h` includes BOTH `secp256k1_frost.h`
-   and `secp256k1_musig.h`; no existing header changes.
+   consumer would have to build.
+
+   The cost is new-module boilerplate. The complete checklist — everywhere iceberg is listed:
+   - `configure.ac`: the flag declaration itself (`AC_ARG_ENABLE` + `SECP_SET_DEFAULT` with
+     default `no`, like frost's at `:243-246`), the module block force-enabling frost AND
+     musig, an entry in the experimental gate (like frost's at `:628-630`), and
+     `AM_CONDITIONAL([ENABLE_MODULE_PREFRACTAL], ...)` (like iceberg's at `:676`) — the
+     conditional is what makes the `Makefile.am` hook reachable.
+   - `Makefile.am`: the `if ENABLE_MODULE_PREFRACTAL / include
+     src/modules/prefractal/Makefile.am.include` hook (like iceberg's at `:399-401`), plus the
+     new `src/modules/prefractal/Makefile.am.include` itself.
+   - Top-level `CMakeLists.txt`: the `option(...)` default OFF (like `:49-56`) and the summary
+     line (like `:297-305`). `src/CMakeLists.txt`: the module block and the `PUBLIC_HEADER`
+     property entry (like `:82`/`:91`/`:100`).
+   - Include blocks in `src/secp256k1.c` and `src/tests.c`, one header line in
+     `libsecp256k1.def`, one flag in `native/build.gradle.kts`.
+   `include/secp256k1_prefractal.h` includes BOTH `secp256k1_frost.h` and `secp256k1_musig.h`;
+   no existing header changes. Note the experimental gate is AUTOTOOLS-ONLY: CMake gates no
+   module on `SECP256K1_EXPERIMENTAL` (only ARM32 asm, `CMakeLists.txt:127-132`), so on the
+   CMake side "experimental" is just the option's default OFF and its help string.
+
+   THREE ordering constraints apply, and they do NOT point in the same direction — do not
+   "mirror iceberg's position" blindly:
+   1. `src/secp256k1.c`: prefractal's include goes AFTER frost and musig (statics access).
+   2. `src/CMakeLists.txt`: prefractal's module block goes BEFORE both dependencies — iceberg's
+      slot (`:76-83`, before musig at `:85` and frost at `:94`) works because its
+      `set(SECP256K1_ENABLE_MODULE_MUSIG ON)` lands before the musig block reads the variable.
+   3. `configure.ac`: prefractal's module block goes BEFORE the musig block (`~:528`) — NOT at
+      iceberg's position (`:576-582`). configure.ac orders its blocks the other way (musig
+      `:528`, frost `:556`, iceberg `:576`), and iceberg's late `enable_module_musig=yes`
+      (`:580`) is only harmless because musig DEFAULTS TO `yes` (`:188-190`). FROST DEFAULTS
+      TO `no` (`:243-246`): a late force-enable would miss the frost block's
+      `SECP_CONFIG_DEFINES` emission — no `-DENABLE_MODULE_FROST=1`, so `secp256k1.c` skips
+      `modules/frost/main_impl.h` and prefractal's calls into frost statics don't compile —
+      while `AM_CONDITIONAL([ENABLE_MODULE_FROST])` at `:674` WOULD observe the mutation, so
+      `Makefile.am`'s `if ENABLE_MODULE_FROST` blocks (`:221`, `:391-393`) compile frost's
+      sources and tests into an inconsistent build. configure.ac itself warns about this
+      class of problem (`:597-600`: "The order of the following tests matters… we first test
+      dependent modules"); placing prefractal's block before its dependencies follows that
+      convention.
 5. **Quorum is `t` in BOTH rounds** (vs iceberg's `2t-1`/`t`), and any `t`-of-`n` is expressible
    — 2-of-2 and 3-of-4, which iceberg forbids, become available. `n` is bounded by
    `SECP256K1_FROST_MAX_PARTICIPANTS` (128). Unlike iceberg, the round-two signers must be
@@ -116,8 +149,9 @@ Copy the annotation style of `secp256k1_frost_sign` (`SECP256K1_API SECP256K1_WA
 int`, `SECP256K1_ARG_NONNULL(...)`). The header includes BOTH `secp256k1_frost.h` and
 `secp256k1_musig.h` (as `secp256k1_iceberg.h:4` includes the musig header); no existing header
 changes. The module is declared experimental and its CMake/configure.ac blocks force-enable
-frost AND musig, mirroring iceberg's blocks (`src/CMakeLists.txt:76-83`,
-`configure.ac:576-582`) — see decision 4.
+frost AND musig — placed BEFORE both dependency blocks in each file (in configure.ac that
+means before the musig block at ~`:528`, NOT at iceberg's `:576-582` slot) — see decision 4's
+ordering constraints and full wiring checklist.
 
 ```c
 /* Aggregate member pubnonces and export the group's OUTER-wire nonce:
@@ -291,9 +325,23 @@ must succeed and force-enable both dependency modules, exactly as iceberg does f
 (decision 4); a default build with PREFRACTAL off must remain unchanged and the frost module's
 BIP 445 vectors stay green either way.
 
-Deliverable: submodule commit adding the prefractal module (header, impl, tests, and the build
-wiring in `src/CMakeLists.txt`, `configure.ac`, `Makefile.am.include`, `src/secp256k1.c`,
-`src/tests.c`), tests green.
+Exercise the autotools path too — it is where the decision-4 ordering trap lives:
+
+```
+./autogen.sh && ./configure --enable-experimental --enable-module-prefractal
+make -j && make check
+```
+
+The configure output must show frost and musig enabled (their `-DENABLE_MODULE_*` defines
+emitted via `SECP_CONFIG_DEFINES`), and `--enable-module-prefractal` WITHOUT
+`--enable-experimental` must fail at the experimental gate.
+
+Deliverable: submodule commit adding the prefractal module (header, impl, tests, and the FULL
+build wiring per decision 4's checklist: flag declaration, module block placed BEFORE the
+musig block in `configure.ac` and before both dependencies in `src/CMakeLists.txt`,
+experimental-gate entry, `AM_CONDITIONAL`, `Makefile.am` hook,
+`src/modules/prefractal/Makefile.am.include`, CMake option + summary line + `PUBLIC_HEADER`,
+`src/secp256k1.c`, `src/tests.c`), tests green on BOTH build systems.
 
 ---
 
@@ -563,3 +611,8 @@ test target (`:lightning-kmp-core:linuxX64Test` or macOS equivalent).
   musig) update must be merged consciously since prefractal depends on BOTH modules' internals
   (`static` functions with no stability guarantee) and on its include position AFTER both in
   `src/secp256k1.c` — a reordering breaks the build, not just the tests.
+- **Build-file ordering traps.** The three build files order module blocks differently and
+  decision 4 spells out all three constraints precisely because "mirror iceberg" is actively
+  wrong for configure.ac: its late-force-enable pattern is safe only for default-yes modules
+  (musig), while frost defaults to no. Any future module added by copy-paste should re-read
+  decision 4 rather than iceberg's blocks.
