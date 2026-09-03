@@ -1,4 +1,4 @@
-# Nested FROST+MuSig2 threshold signer — implementation plan
+# Nested FROST+MuSig2 threshold signer (the `fractal` module) — implementation plan
 
 Goal: let a FROST `t`-of-`n` group occupy ONE participant slot of a taproot channel's 2-of-2
 MuSig2 funding output, as a second `FundingSigner` implementation next to the existing Iceberg
@@ -23,7 +23,7 @@ architecture — the iceberg module — so every nesting mechanic below has an i
    (`verificationNonce`, `publishedNonceSession`). The iceberg module solves the same problem
    with its own `Iceberg/noncecoef` tag over `(R1, R2', P)` and lets the OUTER `b_musig` (which
    does commit to the message, via `secp256k1_musig_nonce_process_internal`) bind it. We do the
-   same: `b_frost = tagged_hash("NestedFrost/noncecoef", ser32(u) || sorted ids || aggnonce66 ||
+   same: `b_frost = tagged_hash("Fractal/noncecoef", ser32(u) || sorted ids || aggnonce66 ||
    ext33(thresh_pk))`, hashing the group key's full 33-byte extended serialization
    (`secp256k1_musig_ge_serialize_ext`) exactly like iceberg's noncecoef — NOT its x-only
    encoding, since the key is used as a full point everywhere downstream. This deviates from
@@ -32,7 +32,7 @@ architecture — the iceberg module — so every nesting mechanic below has an i
 2. **Label-derived deterministic nonces, iceberg-style.** FROST's `SecretNonce` is random and
    single-use, which does not fit `FundingSigner.verificationNonce` (published early, re-derived
    later by a possibly fresh signer instance). Fix: drive `secp256k1_frost_nonce_gen` with
-   `session_secrand32 = tagged_hash("NestedFrost/session", sessionId || member_id)` and
+   `session_secrand32 = tagged_hash("Fractal/session", sessionId || member_id)` and
    `msg = NULL` both at publication and at signing time, making each member's nonce a pure
    function of `(secshare, sessionId)`. The safety invariant is identical to iceberg's: ONE
    sessionId signs ONE message, group-wide, or keys leak without any error being raised.
@@ -50,27 +50,34 @@ architecture — the iceberg module — so every nesting mechanic below has an i
    (`frost/session_impl.h:664`) and negates `d` on it (`frost/session_impl.h:797-800`), so
    with an identity tweak cache the factor is -1 whenever the group key has odd Y — roughly
    half of all generated groups. Do NOT copy `secp256k1_frost_get_session_values`'s key-side
-   parity handling into the nested session; "the tweak cache is the identity" is NOT the
+   parity handling into the fractal session; "the tweak cache is the identity" is NOT the
    reason `g_frost` is absent, and an implementer who believes it is will import the `pk_odd`
    negation and produce a signer that works for even-Y group keys and fails for odd-Y ones.
-   The nested aggregator is a plain sum of partial signatures in v1, and every entry point
+   The fractal aggregator is a plain sum of partial signatures in v1, and every entry point
    that receives a FROST tweak cache must FAIL if it is not the identity (`tacc != 0` or
    `gacc_parity != 0`); a tweak-aware aggregation variant (folding `e_musig · g_musig · tacc`
    like frosty-musig's `nested_frost_partial_sig_agg`) is an optional later extension.
-4. **No new opaque C types.** Follow iceberg's sessionless API: every call takes all session
-   parameters explicitly (ids, pubshares, aggnonce, group key, outer keyagg cache, cosigner
-   aggnonce, msg32). This avoids new `data[N]` blobs, new magics, and new `*_SIZE` constants in
-   three synced places. All new functions live in the EXISTING frost module/header, so
-   `libsecp256k1.def` and the gradle wiring do not change (the composite build already enables
-   both modules, `native/build.gradle.kts:12`). The frost module DOES gain a musig dependency,
-   which means three C-level changes, each mirroring iceberg exactly: `#include
-   "secp256k1_musig.h"` in `include/secp256k1_frost.h` (like `secp256k1_iceberg.h:4`), and
-   force-enabling musig from the frost block in `src/CMakeLists.txt` and `configure.ac` (like
-   `src/CMakeLists.txt:76-83` and `configure.ac:576-582` do for iceberg). Without these, a
-   standalone build with `-DSECP256K1_ENABLE_MODULE_FROST=ON
-   -DSECP256K1_ENABLE_MODULE_MUSIG=OFF` fails to compile; the composite build hides this
-   because it always enables both. Include order needs no change: musig is included at
-   `secp256k1.c:921`, frost at `secp256k1.c:957`, so musig statics are already visible.
+4. **No new opaque C types, and a NEW experimental module named `fractal`.** Follow iceberg's
+   sessionless API: every call takes all session parameters explicitly (ids, pubshares,
+   aggnonce, group key, outer keyagg cache, cosigner aggnonce, msg32). This avoids new
+   `data[N]` blobs, new magics, and new `*_SIZE` constants in three synced places. The
+   functions live in a new experimental module `src/modules/fractal` (public header
+   `include/secp256k1_fractal.h`, functions namespaced `secp256k1_fractal_*`) that depends on
+   BOTH the frost and musig modules — the same architecture iceberg uses for musig: a
+   standalone module included late in `secp256k1.c` (iceberg is at `:965`, after musig at
+   `:921` and frost at `:957`) can call the earlier modules' `static` internals, because the
+   whole library is one translation unit. Two reasons for NOT putting this in the frost
+   module: (a) the frost module stays pure, vector-pinned BIP 445 — the deliberately
+   non-compliant nested scheme (decisions 1-3) lives behind its own opt-in flag, giving
+   auditors a clean scope boundary; (b) the dependency graph stays honest — frost keeps
+   depending only on schnorrsig instead of absorbing a musig dependency that every pure-FROST
+   consumer would have to build. The cost is new-module boilerplate everywhere iceberg is
+   listed: the CMake/configure.ac module blocks (fractal force-enables frost AND musig,
+   mirroring `src/CMakeLists.txt:76-83` and `configure.ac:576-582`), `Makefile.am.include`,
+   include blocks in `src/secp256k1.c` (AFTER frost — the module relies on frost and musig
+   statics) and `src/tests.c`, one header line in `libsecp256k1.def`, one flag in
+   `native/build.gradle.kts`. `include/secp256k1_fractal.h` includes BOTH `secp256k1_frost.h`
+   and `secp256k1_musig.h`; no existing header changes.
 5. **Quorum is `t` in BOTH rounds** (vs iceberg's `2t-1`/`t`), and any `t`-of-`n` is expressible
    — 2-of-2 and 3-of-4, which iceberg forbids, become available. `n` is bounded by
    `SECP256K1_FROST_MAX_PARTICIPANTS` (128). Unlike iceberg, the round-two signers must be
@@ -82,7 +89,7 @@ architecture — the iceberg module — so every nesting mechanic below has an i
 
 - Vendored C fork (git submodule): `experimental/bitcoin-kmp/experimental/secp256k1-kmp/native/secp256k1`
   (upstream `code.sigidli.com/frost/secp256k1-zkp.git`, HEAD `03db8281`, has `frost`,
-  `chilldkg`, `iceberg` modules).
+  `chilldkg`, `iceberg` modules; this plan adds a fourth, `fractal`).
 - KMP wrapper: `experimental/bitcoin-kmp/experimental/secp256k1-kmp` — common `interface
   Secp256k1`, JNI actual (`jni/`), cinterop actual (`src/nativeMain`), tests in `tests/`.
 - bitcoin-kmp fork: `experimental/bitcoin-kmp` — `fr.acinq.bitcoin.crypto.frost.Frost` and
@@ -92,34 +99,38 @@ architecture — the iceberg module — so every nesting mechanic below has an i
 
 ---
 
-## Phase 1 — C fork: nested-signing functions in the frost module
+## Phase 1 — C fork: the `fractal` module
 
 All work in `experimental/bitcoin-kmp/experimental/secp256k1-kmp/native/secp256k1` (a submodule:
-commit there, on a branch, first). Everything lives in the frost module so it compiles into the
-same translation unit as the musig module and can call its `static` internals — exactly what
-`src/modules/iceberg/session_impl.h` does (`#include "../musig/keyagg.h"`, calls
+commit there, on a branch, first). Everything lives in a NEW experimental module,
+`src/modules/fractal/`, included AFTER frost in `src/secp256k1.c` so it compiles into the same
+translation unit as the frost and musig modules and can call their `static` internals — the
+same mechanism iceberg (its own module, `secp256k1.c:965`) uses to call
 `secp256k1_musig_nonce_process_internal`, `secp256k1_musig_keyaggcoef`,
-`secp256k1_musig_pubnonce_save`, `secp256k1_musig_aggnonce_load`, `secp256k1_keyagg_cache_load`).
+`secp256k1_musig_pubnonce_save`, `secp256k1_musig_aggnonce_load` and
+`secp256k1_keyagg_cache_load` from `src/modules/iceberg/session_impl.h`.
 
-### 1.1 Public API — declare in `include/secp256k1_frost.h`
+### 1.1 Public API — new header `include/secp256k1_fractal.h`
 
 Copy the annotation style of `secp256k1_frost_sign` (`SECP256K1_API SECP256K1_WARN_UNUSED_RESULT
-int`, `SECP256K1_ARG_NONNULL(...)`). The header gains `#include "secp256k1_musig.h"` (as
-`secp256k1_iceberg.h:4` does), and the frost module declares its musig dependency in
-`src/CMakeLists.txt` and `configure.ac`, mirroring iceberg's blocks — see decision 4.
+int`, `SECP256K1_ARG_NONNULL(...)`). The header includes BOTH `secp256k1_frost.h` and
+`secp256k1_musig.h` (as `secp256k1_iceberg.h:4` includes the musig header); no existing header
+changes. The module is declared experimental and its CMake/configure.ac blocks force-enable
+frost AND musig, mirroring iceberg's blocks (`src/CMakeLists.txt:76-83`,
+`configure.ac:576-582`) — see decision 4.
 
 ```c
 /* Aggregate member pubnonces and export the group's OUTER-wire nonce:
  * pubnonce_out = (R1, b_frost · R2) as an ordinary musig pubnonce (this is what
  * goes on the lightning wire); aggnonce_out = the UNSCALED frost aggnonce,
  * which signers need later for partial signing.
- * b_frost = tagged_hash("NestedFrost/noncecoef", u || sorted ids || aggnonce ||
+ * b_frost = tagged_hash("Fractal/noncecoef", u || sorted ids || aggnonce ||
  * ext33(thresh_pk)) — full extended serialization, as in iceberg's noncecoef.
  * Fails if EITHER output component is infinity (a musig pubnonce cannot encode
  * it, and either frost aggnonce column sum may be infinity per BIP 445
  * NonceAgg) — same guard as iceberg's publish_nonce, which checks both out[0]
  * and out[1] (iceberg/session_impl.h:124). */
-int secp256k1_frost_nested_nonce_agg(
+int secp256k1_fractal_nonce_agg(
     const secp256k1_context *ctx,
     secp256k1_musig_pubnonce *pubnonce_out,
     secp256k1_frost_aggnonce *aggnonce_out,
@@ -136,10 +147,10 @@ int secp256k1_frost_nested_nonce_agg(
  * the non-frost participants only. tweak_cache is the FROST tweak cache of
  * thresh_pk and MUST be the identity — checked HERE, at signing time, so the
  * key being signed under is tied to the cache being validated and the check in
- * nested_partial_sig_agg is not the only enforcement. secnonce is wiped.
+ * fractal_partial_sig_agg is not the only enforcement. secnonce is wiped.
  * Self-verify the share before returning, like secp256k1_frost_sign_internal
  * does. */
-int secp256k1_frost_nested_sign(
+int secp256k1_fractal_sign(
     const secp256k1_context *ctx,
     secp256k1_frost_partial_sig *partial_sig,
     secp256k1_frost_secnonce *secnonce,
@@ -156,9 +167,9 @@ int secp256k1_frost_nested_sign(
 /* Verify member i's nested share:
  * s_i·G == R1_i + b_frost·b_musig·R2_i + e·a·λ_i·g·gacc·P_i  (nonce points
  * negated iff outer fin-nonce odd; g/gacc here are the OUTER musig factors).
- * Recomputes the full session from the same params as
- * secp256k1_frost_nested_sign, including the identity tweak_cache check. */
-int secp256k1_frost_nested_partial_sig_verify(
+ * Recomputes the full session from the same params as secp256k1_fractal_sign,
+ * including the identity tweak_cache check. */
+int secp256k1_fractal_partial_sig_verify(
     const secp256k1_context *ctx,
     const secp256k1_frost_partial_sig *partial_sig,
     const secp256k1_frost_pubnonce *pubnonce,
@@ -181,7 +192,7 @@ int secp256k1_frost_nested_partial_sig_verify(
  * secp256k1_musig_partial_sig_save (as iceberg does, iceberg/session_impl.h:838),
  * NEVER a raw struct copy: frost and musig partial-sig structs are both
  * data[36] but carry different magics, so a memcpy'd struct fails ARG_CHECK. */
-int secp256k1_frost_nested_partial_sig_agg(
+int secp256k1_fractal_partial_sig_agg(
     const secp256k1_context *ctx,
     secp256k1_musig_partial_sig *sig_out,
     size_t *error_index,
@@ -189,14 +200,14 @@ int secp256k1_frost_nested_partial_sig_agg(
     const secp256k1_frost_tweak_cache *tweak_cache);
 ```
 
-### 1.2 Implementation — `src/modules/frost/session_impl.h` (or a new
-`nested_impl.h` included from `src/modules/frost/main_impl.h`)
+### 1.2 Implementation — `src/modules/fractal/session_impl.h` (included from
+`src/modules/fractal/main_impl.h`)
 
 Reuse, do not re-implement:
 
 - λ_i: `secp256k1_frost_derive_interpolating_value` (`src/modules/frost/keygen_impl.h:103`).
 - Frost session values for shape reference: `secp256k1_frost_get_session_values`
-  (`session_impl.h:590`) — but we need our own `secp256k1_frost_nested_session_values` that
+  (`frost/session_impl.h:590`) — but we need our own `secp256k1_fractal_session_values` that
   computes b_frost WITHOUT msg (hashing ext33(thresh_pk), not xbytes — see decision 1), scales
   the second aggnonce component by b_frost (`secp256k1_effective_nonce`-style ecmult,
   `musig/session_impl.h:558`; there is no frost variant of that helper), then adds the cosigner
@@ -205,8 +216,8 @@ Reuse, do not re-implement:
   e_musig. Iceberg's `secp256k1_iceberg_session_values` (`iceberg/session_impl.h:429`) is a
   line-for-line template. Do NOT lift the key-side parity handling from
   `secp256k1_frost_get_session_values`: its `g_times_gacc_parity = gacc_parity ^ pk_odd`
-  (`session_impl.h:664`) is the x-only normalization of a STANDALONE frost key and has no
-  place here (decision 3).
+  (`frost/session_impl.h:664`) is the x-only normalization of a STANDALONE frost key and has
+  no place here (decision 3).
 - a_musig: `secp256k1_musig_keyaggcoef_internal` (`musig/keyagg_impl.h:106`) on the group
   pubkey; key-side parity: negate iff `fe_is_odd(cache_i.pk.y) != cache_i.parity_acc`
   (`musig/session_impl.h:685`).
@@ -228,39 +239,39 @@ must stay absent):
    enters the outer keyagg as a full 33-byte point and is never x-only-normalized at the
    frost level (iceberg does the same — `iceberg/session_impl.h:468-475` reads only the OUTER
    aggregate's parity). Note that `g_frost` would be −1 for odd-Y group keys if copied from
-   stock frost (`session_impl.h:664`, `:797-800`): an implementer who reasons "identity cache
-   ⇒ no frost key term" and copies `frost_get_session_values` gets a signer that works for
-   even-Y group keys and fails for odd-Y ones. ASSERT the identity cache at signing AND
+   stock frost (`frost/session_impl.h:664`, `:797-800`): an implementer who reasons "identity
+   cache ⇒ no frost key term" and copies `frost_get_session_values` gets a signer that works
+   for even-Y group keys and fails for odd-Y ones. ASSERT the identity cache at signing AND
    aggregation, rather than silently ignoring a tweaked cache.
 
-### 1.3 C tests — `src/modules/frost/tests_impl.h`
+### 1.3 C tests — `src/modules/fractal/tests_impl.h`
 
-Model on `iceberg/tests_impl.h` (`tests.c` picks them up under the existing
-`ENABLE_MODULE_FROST` guard — no build wiring change):
+Model on `iceberg/tests_impl.h`; `src/tests.c` gains an include block under a new
+`ENABLE_MODULE_FRACTAL` guard, mirroring the iceberg one (`tests.c:7932`):
 
 - Round-trip: 2-of-3 nested group + one stock musig cosigner; `musig_nonce_agg` over
   [group pubnonce, cosigner pubnonce], stock `musig_nonce_process`, stock
-  `musig_partial_sign` for the cosigner, `secp256k1_frost_nested_sign` × 2,
-  `secp256k1_frost_nested_partial_sig_agg`, stock `secp256k1_musig_partial_sig_agg`, then
+  `musig_partial_sign` for the cosigner, `secp256k1_fractal_sign` × 2,
+  `secp256k1_fractal_partial_sig_agg`, stock `secp256k1_musig_partial_sig_agg`, then
   `secp256k1_schnorrsig_verify` against the tweaked aggregate xonly key. Cover t-of-n =
   {2-of-2, 2-of-3, 3-of-5} and both lexicographic positions of the group key. Pin at least
   one FIXED group key with odd Y (not a randomly regenerated fixture) so the decision-3
   parity trap cannot hide behind a lucky even-Y seed.
 - With an xonly tweak applied to the OUTER keyagg cache (the BIP341 case).
-- `nested_partial_sig_verify` accepts valid shares, rejects a tampered share and a share
+- `fractal_partial_sig_verify` accepts valid shares, rejects a tampered share and a share
   signed under the wrong id set.
-- Identity-cache enforcement: a non-identity frost tweak cache fails `nested_sign`,
-  `nested_partial_sig_verify` AND `nested_partial_sig_agg` (decision 3).
+- Identity-cache enforcement: a non-identity frost tweak cache fails `fractal_sign`,
+  `fractal_partial_sig_verify` AND `fractal_partial_sig_agg` (decision 3).
 - Infinity guard: crafted aggnonces whose FIRST or (scaled) SECOND component is infinity both
-  fail `nested_nonce_agg` (mirror iceberg's publish-nonce failure path, which guards both
+  fail `fractal_nonce_agg` (mirror iceberg's publish-nonce failure path, which guards both
   outputs).
 - Wrong-key-order / missing-tweak shares are well-formed but fail final schnorr verification
   (negative control).
-- Nonce reuse: calling `nested_sign` twice with the same secnonce fails (secnonce wiped).
+- Nonce reuse: calling `fractal_sign` twice with the same secnonce fails (secnonce wiped).
 
 ### 1.4 Optional in this phase
 
-- `examples/frost_nested.c` (mirror `examples/iceberg.c`) and a `doc/frost_nested.md` — the
+- `examples/fractal.c` (mirror `examples/iceberg.c`) and a `doc/fractal.md` — the
   doc is worth doing because decision 1 deviates from BIP 445, decision 2 redefines nonce
   derivation, and decision 3 drops FROST-level parity normalization; all three must be written
   down where reviewers will find them.
@@ -270,30 +281,32 @@ Model on `iceberg/tests_impl.h` (`tests.c` picks them up under the existing
 
 ```
 cd experimental/bitcoin-kmp/experimental/secp256k1-kmp/native/secp256k1
-cmake -B build -DSECP256K1_ENABLE_MODULE_FROST=ON -DSECP256K1_ENABLE_MODULE_MUSIG=ON \
+cmake -B build -DSECP256K1_ENABLE_MODULE_FRACTAL=ON \
       -DSECP256K1_BUILD_TESTS=ON -DSECP256K1_BUILD_EXAMPLES=ON
 cmake --build build && ./build/bin/tests
 ```
 
-Also verify the new module dependency (decision 4): configuring with
-`-DSECP256K1_ENABLE_MODULE_FROST=ON` and NO explicit musig flag must now succeed and
-force-enable musig, exactly as iceberg does.
+Configuring with only `-DSECP256K1_ENABLE_MODULE_FRACTAL=ON` (no explicit frost/musig flags)
+must succeed and force-enable both dependency modules, exactly as iceberg does for musig
+(decision 4); a default build with FRACTAL off must remain unchanged and the frost module's
+BIP 445 vectors stay green either way.
 
-Deliverable: submodule commit with header decls, impl, the frost→musig dependency declared in
-both build systems, tests green.
+Deliverable: submodule commit adding the fractal module (header, impl, tests, and the build
+wiring in `src/CMakeLists.txt`, `configure.ac`, `Makefile.am.include`, `src/secp256k1.c`,
+`src/tests.c`), tests green.
 
 ---
 
 ## Phase 2 — secp256k1-kmp bindings (JVM + Native)
 
-In `experimental/bitcoin-kmp/experimental/secp256k1-kmp/`. No gradle or `.def` changes: the
-frost module is already CMake-enabled (`native/build.gradle.kts:12`) and `secp256k1_frost.h` is
-already in `src/nativeInterop/cinterop/libsecp256k1.def`, so cinterop picks the new functions
-up automatically. Four functions to expose, plus `frost_nonce_gen` reuse — with one caveat:
-the existing binding takes the group key as a nullable `XonlyPublicKey` (`Frost.kt:328`), so
-`FrostNested.generateNonce` forwards `groupPublicKey.xOnly()` through it (Phase 3) and no new
-binding is needed. (The C-side build files `src/CMakeLists.txt` and `configure.ac` DO change —
-that work lands in Phase 1's submodule commit, per decision 4.)
+In `experimental/bitcoin-kmp/experimental/secp256k1-kmp/`. Two one-line wiring changes here:
+`-DSECP256K1_ENABLE_MODULE_FRACTAL=ON` joins `CMAKE_DEFAULT_OPTS` (`native/build.gradle.kts:12`)
+and `secp256k1_fractal.h` joins `src/nativeInterop/cinterop/libsecp256k1.def`, so cinterop picks
+the new functions up automatically. Four functions to expose, plus `frost_nonce_gen` reuse —
+with one caveat: the existing binding takes the group key as a nullable `XonlyPublicKey`
+(`Frost.kt:328`), so `FrostNested.generateNonce` forwards `groupPublicKey.xOnly()` through it
+(Phase 3) and no new binding is needed. The Kotlin binding names below stay `frostNested*`
+(they describe the composition); only the C names carry the `fractal` module namespace.
 
 1. `src/commonMain/kotlin/fr/acinq/secp256k1/Secp256k1.kt` — add to `interface Secp256k1`
    (KDoc style of `frostSign`, line 454):
@@ -309,7 +322,7 @@ that work lands in Phase 1's submodule commit, per decision 4.)
    (frost secnonce/aggnonce/tweak cache, musig keyagg cache — magics already in the companion), `memScoped`
    + `alloc` helpers (reuse `allocFrostPubnonce`, `allocFrostTweakCache`, `allocPubshares`;
    add `allocFrostAggnonce`, `allocMusigKeyaggCache`/`allocMusigAggnonce` if absent),
-   `.requireSuccess("secp256k1_frost_nested_sign() failed")`.
+   `.requireSuccess("secp256k1_fractal_sign() failed")`.
 3. `jni/src/main/java/fr/acinq/secp256k1/Secp256k1CFunctions.java` — native declarations
    (`long ctx`, `byte[]`, `byte[][]`, `int[]`, `int` args; no new size constants).
 4. `jni/c/headers/java/fr_acinq_secp256k1_Secp256k1CFunctions.h` — regenerate with
@@ -319,7 +332,7 @@ that work lands in Phase 1's submodule commit, per decision 4.)
    the `frost_sign` body (lines 1663-1709): `get_bytes`/`get_bytes32`/`get_signer_ids`/
    `get_pubshares` marshalling, `CHECKMAGIC` on opaque inputs BEFORE any C call (the default
    ARG_CHECK aborts the process), `free` on every path before `CHECKRESULT`, results via
-   `copy_bytes_to_java`. The musig pubnonce output of `nested_nonce_agg` is returned via
+   `copy_bytes_to_java`. The musig pubnonce output of `fractal_nonce_agg` is returned via
    `secp256k1_musig_pubnonce_serialize`.
 6. `jni/src/main/kotlin/fr/acinq/secp256k1/Secp256k1Jni.kt` — overrides with `require`
    validation and `UIntArray → IntArray` mapping, forwarding through
@@ -345,7 +358,8 @@ cd experimental/bitcoin-kmp/experimental/secp256k1-kmp
 
 New file `experimental/bitcoin-kmp/src/commonMain/kotlin/fr/acinq/bitcoin/crypto/frost/FrostNested.kt`
 (same package as `Frost.kt`; deliberately separate from it because this composition is NOT BIP
-445 — see design decisions 1–2). Shape it on `crypto/iceberg/Iceberg.kt`:
+445 — see design decisions 1–2). Shape it on `crypto/iceberg/Iceberg.kt`. This object wraps the
+fractal module's C functions via the Phase 2 bindings.
 
 ```kotlin
 object FrostNested {
@@ -375,7 +389,7 @@ object FrostNested {
 }
 ```
 
-- `session_secrand32 = Crypto.sha256("NestedFrost/session" || sessionId || ser32(myId))` —
+- `session_secrand32 = Crypto.sha256("Fractal/session" || sessionId || ser32(myId))` —
   document that `sessionId` uniqueness group-wide is the key-leak invariant, same as iceberg.
   With this label-derived randomness, the group-key input to `nonce_gen` is redundant domain
   separation anyway (iceberg's `generateNonce` takes no group key at all), which is why the
@@ -487,7 +501,7 @@ nonce — this is the test that pins down decision 2), splice refusing loudly vi
 Three deliberate adaptations:
 
 - The op-count measurement test needs new expectations: FROST round one is `t`
-  `generateNonce` calls + 1 `nested_nonce_agg`, round two is `t` signs + 1 agg — no 2t-1.
+  `generateNonce` calls + 1 `fractal_nonce_agg`, round two is `t` signs + 1 agg — no 2t-1.
 - `CountingFundingSigner` is already generic; consider moving it from the `iceberg` package
   to a neutral `crypto` test package and letting both suites use it.
 - The group-key fixtures must include at least one FIXED key with odd Y — iceberg's inherited
@@ -503,7 +517,7 @@ test target (`:lightning-kmp-core:linuxX64Test` or macOS equivalent).
 
 1. **Security review gate.** The C code is new consensus-critical crypto: the b_frost-without-
    msg deviation (decision 1), the label-derived nonces (decision 2) and the absent `g_frost`
-   parity normalization (decision 3) need written justification in `doc/frost_nested.md` and
+   parity normalization (decision 3) need written justification in `doc/fractal.md` and
    external review. frosty-musig is unaudited research code; the
    vendored frost module is itself marked experimental. Keep the Kotlin API tagged with the
    same WARNING docblocks the existing `Frost` object carries. Cross-check against
@@ -513,7 +527,8 @@ test target (`:lightning-kmp-core:linuxX64Test` or macOS equivalent).
    be enumerated (the channel flows already guarantee one-message-per-id for iceberg; re-verify
    each call site for frost, especially reconnection and RBF paths that rebuild sessions).
 3. **Upstream/submodule hygiene.** The C work lands on a branch of the
-   `code.sigidli.com/frost/secp256k1-zkp.git` fork; bump the submodule pointer in
+   `code.sigidli.com/frost/secp256k1-zkp.git` fork as one self-contained module directory
+   (no edits interleaved into frost or musig); bump the submodule pointer in
    secp256k1-kmp deliberately, not accidentally.
 4. **Publishing.** Consumers outside this composite build need a new secp256k1-kmp release
    (current 0.24.0) and a bitcoin-kmp release carrying `FrostNested`; lightning-kmp's
@@ -544,6 +559,7 @@ test target (`:lightning-kmp-core:linuxX64Test` or macOS equivalent).
 - **JNI/native marshalling skew** (magics duplicated in three places; empty-vs-null args on
   native). Mitigation: no new magics (decision 4); port the full test matrix to both
   platforms in phase 2; keep `07f7dcc`'s lesson in view for the `msg = NULL` nonce-gen path.
-- **frost module API churn upstream.** The fork is pinned; any upstream BIP 445 update must
-  be merged consciously since we now depend on module internals (`static` functions) that have
-  no stability guarantee.
+- **frost/musig module API churn upstream.** The fork is pinned; any upstream BIP 445 (or
+  musig) update must be merged consciously since fractal depends on BOTH modules' internals
+  (`static` functions with no stability guarantee) and on its include position AFTER both in
+  `src/secp256k1.c` — a reordering breaks the build, not just the tests.
