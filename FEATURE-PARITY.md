@@ -135,6 +135,23 @@ reference tree. Each phase ends at a green build and is independently committabl
 
 ## Phase 0 — Prove the toolchain reaches Iceberg (gate) — ~0.5 day
 
+**Status: done.** `IcebergToolchainScratchTest` (commonTest, run on jvmTest) is green, 7/7, with no
+build changes. Four things it established, beyond "the symbols are there":
+
+- The group key aggregated over a `2t-1` quorum of public shares **equals** the one over all `n`, so
+  the port's keygen may aggregate over the quorum as the reference does.
+- Round one really is a pure function of the session label — the same label re-derives the same
+  contributions, a different label does not.
+- An illegal `(n, t)` throws a plain exception rather than aborting the process, so
+  `Iceberg.requireConfig` has no counterpart to port.
+- Signing twice under one session label raises no error at all, and produces two different signature
+  shares. The hazard is real and entirely the caller's to avoid.
+
+One thing it did **not** establish: whether a member that sat out round one can still sign in round
+two. bitcoin-kmp's own suite only ever signs with round-one contributors, so the reference's
+`roundTwo` doc claim to the contrary is untested. Phase 3 keeps `signers ⊆ contributors` and drops
+the claim.
+
 Nothing below is worth starting until a JVM test inside `modules/core` can deal shares and produce
 an aggregate signature. This phase writes throwaway code and deletes it.
 
