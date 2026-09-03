@@ -366,6 +366,21 @@ a signer that ignores the tweak on both sides.
 
 ## Phase 4 — Test suites and signer injection — ~1–2 days
 
+**Status: done.** All twelve channel cases below pass, in **commonTest** rather than the reference's
+jvmTest. Full suite at **942** (911 baseline + 31), and `compileKotlinLinuxX64` still green.
+
+The headline parity number is confirmed by observation, not by reading the call graph: **one payment
+costs the group 6 round-ones and 2 round-twos**, the same count the reference and the eclair fork
+report. The split is `verificationNonce=4, signWithFreshNonce=2` — the group-backed side derives four
+nonces and produces two signatures per payment, and `signWithVerificationNonce` is 0 because signing
+one's *own* commitment only happens on force-close. Channel establishment costs 5 round-ones and 1
+round-two.
+
+`CountingFundingSigner` was pulled forward from phase 5, because the first channel case needs it. It
+is rewritten without `java.util.concurrent.atomic.AtomicLong`, which would have pinned it — and
+therefore the channel suite — to jvmTest for no benefit: the state machine drives its signer from one
+thread, and the measurement it feeds is explicitly single-threaded anyway.
+
 Port `2c3490ad`, moving what the reference had to keep in `jvmTest` down into `commonTest`.
 
 `commonTest` (verbatim from the reference):

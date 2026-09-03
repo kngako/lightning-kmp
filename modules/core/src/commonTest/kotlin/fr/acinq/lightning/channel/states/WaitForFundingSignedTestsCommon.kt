@@ -16,6 +16,7 @@ import fr.acinq.lightning.blockchain.WatchConfirmed
 import fr.acinq.lightning.blockchain.electrum.WalletState
 import fr.acinq.lightning.blockchain.fee.FeeratePerKw
 import fr.acinq.lightning.channel.*
+import fr.acinq.lightning.crypto.FundingSigner
 import fr.acinq.lightning.tests.TestConstants
 import fr.acinq.lightning.tests.utils.LightningTestSuite
 import fr.acinq.lightning.utils.msat
@@ -521,7 +522,9 @@ class WaitForFundingSignedTestsCommon : LightningTestSuite() {
             bobFundingAmount: Satoshi = TestConstants.bobFundingAmount,
             requestRemoteFunding: Satoshi? = null,
             zeroConf: Boolean = false,
-            channelOrigin: Origin? = null
+            channelOrigin: Origin? = null,
+            aliceFundingSigner: FundingSigner? = null,
+            bobFundingSigner: FundingSigner? = null
         ): Fixture {
             val (alice, bob, inputAlice, walletAlice) = WaitForFundingCreatedTestsCommon.init(
                 channelType,
@@ -533,7 +536,9 @@ class WaitForFundingSignedTestsCommon : LightningTestSuite() {
                 bobFundingAmount,
                 requestRemoteFunding,
                 zeroConf,
-                channelOrigin
+                channelOrigin,
+                aliceFundingSigner,
+                bobFundingSigner
             )
             val (bob1, actionsBob1) = bob.process(ChannelCommand.MessageReceived(inputAlice))
             // Bob's message will either be tx_add_input or tx_complete depending on whether Bob contributes or not.
