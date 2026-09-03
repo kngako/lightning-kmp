@@ -75,6 +75,16 @@ data class IcebergGroup(
  *    aggregates `t` signature shares.
  *  - SESSION LABELS MUST BE UNIQUE. Iceberg derives nonces from the label rather than storing them,
  *    so a label used twice across the group is a key-leaking path that raises no error at all.
+ *
+ * NOT INTERCHANGEABLE WITH [PrefractalSigner], the other threshold signer behind this seam. Two
+ * rules differ, and transposing either produces invalid signatures rather than an error:
+ *
+ *  - quorum: `2t-1` then `t` here; `t` in BOTH rounds for prefractal.
+ *  - round-two signers: a SUBSET of the round-one contributors is fine here, because iceberg
+ *    interpolates over the contributions. Prefractal requires the SAME SET, since FROST defines its
+ *    Lagrange coefficients and aggregate nonce over the participating set.
+ *
+ * Iceberg also cannot express `t > (n+1)/2`, so 2-of-2 and 3-of-4 are prefractal-only.
  */
 object IcebergSigner {
 

@@ -20,6 +20,41 @@ object. This fork already resolves `bitcoin-kmp` and `secp256k1-kmp` from source
 builds, and its `bitcoin-kmp` fork ships a typed, **multiplatform** Iceberg API. That difference
 removes work rather than adding it, and it lifts the reference's hard JVM-only ceiling.
 
+## Beyond parity: a second threshold signer (`prefractal`)
+
+The `FundingSigner` seam is scheme-agnostic, and a second implementation now sits behind it:
+**prefractal**, a nested FROST+MuSig2 signer built on the construction from
+[frosty-musig](https://github.com/jesseposner/frosty-musig). It occupies the same single MuSig2
+participant slot, produces the same ordinary MuSig2 nonce and partial signature, and drives the same
+channel harness — `reachNormal` already takes `aliceFundingSigner`/`bobFundingSigner`, so nothing in
+the channel code knows which scheme is behind the seam.
+
+Scope: a new experimental `prefractal` module in the vendored secp256k1 fork
+(`doc/prefractal.md` there carries the design notes and the security caveats), bindings through
+secp256k1-kmp on both the JNI and cinterop sides, `fr.acinq.bitcoin.crypto.frost.Prefractal` in
+bitcoin-kmp, and `PrefractalSigner`/`PrefractalFundingSigner` here. No changes to `FundingSigner`,
+`ChannelKeys`, `Transactions` or `Scripts` were needed.
+
+**The two signers are not interchangeable**, and the differences do not transfer:
+
+| | Iceberg | Prefractal |
+| --- | --- | --- |
+| round-one quorum | `2t-1` | `t` |
+| round-two quorum | `t` | `t` |
+| round-two signers | may be a **subset** of the round-one contributors | must be the **same set** |
+| expressible configurations | `t <= (n+1)/2`, so no 2-of-2 or 3-of-4 | any `t`-of-`n`, `n <= 128` |
+| key-set check | `Iceberg.keyAggregationCheck` | re-derives the aggregate and compares |
+
+The subset rule is the one that silently produces bad signatures if transposed: FROST defines the
+Lagrange coefficients and the aggregate nonce over the participating set, so a proper subset leaves
+the missing contributors' nonce terms in `R` while their key shares are absent from the sum.
+`PrefractalSigner.roundTwo` and the `PrefractalFundingSigner` constructor both refuse it.
+
+Both signers derive nonces from a session label rather than storing them, and both therefore carry
+the same hazard: **one label signs one message, group-wide**, or the shares leak with no error
+raised. Their labels are domain-separated from each other so a deployment that ever ran both over
+one group cannot collide them.
+
 ## Where the two trees stand
 
 | | this fork (`threshold`) | reference (`benchmark-iceberg/sources/lightning-kmp`) |
@@ -578,4 +613,6 @@ Feature parity with `592f3844` means all of the following:
 - [ ] One full run: 20 configurations × 1500 paired iterations
 - [ ] Splice design A routed through the seam (free from Phase 2)
 
-Beyond parity: splice design B with positive tests, and the signer running on native/iOS targets.
+Beyond parity: splice design B with positive tests, the signer running on native/iOS targets, and
+the `prefractal` nested FROST+MuSig2 signer described above (its own module, bindings, API, signer,
+and the same channel suite ported — including configurations Iceberg cannot express).

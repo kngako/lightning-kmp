@@ -220,6 +220,29 @@ object PrefractalSigner {
  * TAPROOT ONLY. An [Transactions.CommitmentFormat.AnchorOutputs] channel signs with ECDSA, which no
  * threshold signer here implements; those paths go through [privateKey] and fail loudly by name.
  *
+ * NONCE-HAZARD AUDIT. Nonces are derived from the session label, so signing two DIFFERENT messages
+ * under one label leaks the members' shares with no error raised. Every entry point that consumes a
+ * label was enumerated against its call sites in `modules/core/src/commonMain`:
+ *
+ *  - [signWithFreshNonce] (Commitments.kt:207, :611, InteractiveTx.kt:1270, Helpers.kt:333) draws a
+ *    fresh random label per call. Safe by construction.
+ *  - [publishedNonceSession] (InteractiveTx.kt:750, Helpers.kt:274, :406) likewise draws a fresh
+ *    random label, and [signWithPublishedNonce] (InteractiveTx.kt:62, Helpers.kt:397) consumes that
+ *    one session. Each closing round and each interactive-tx attempt builds its own session, so no
+ *    session object is signed under twice.
+ *  - [verificationNonce] only PUBLISHES; it never signs, so re-deriving it is not reuse. That is
+ *    exactly what the reconnect path (Syncing.kt:519, Channel.kt:346) relies on.
+ *  - [signWithVerificationNonce] has ONE call site: `Commitment.fullySignedCommitTx`
+ *    (Commitments.kt:299). Its label is `(fundingTxId, remoteFundingPubkey, localCommit.index)` and
+ *    its message is `makeLocalTxs(...)` over those same three values plus channel-static parameters
+ *    and `localCommit.spec`. So the message is a pure function of the label given a fixed channel,
+ *    and calling it repeatedly - which force-close retries do - re-signs the identical transaction
+ *    rather than reusing a nonce across two messages.
+ *
+ * The invariant this rests on is that one local commit index carries one spec for one funding
+ * output. RBF changes `fundingTxId`, which is in the label; splices change `fundingTxIndex` and are
+ * refused outright for threshold signers at `ChannelKeys.fundingPublicKey(1)`.
+ *
  * @param contributors the `t` members taking part in round one.
  * @param signers      the `t` members producing shares in round two; must be the SAME SET as
  *                     [contributors], not a subset -- unlike [IcebergFundingSigner].
