@@ -195,7 +195,7 @@ object Helpers {
             commitmentFormat: Transactions.CommitmentFormat,
             fundingTxId: TxId,
             fundingTxOutputIndex: Long,
-            localFundingKey: PrivateKey,
+            localFundingPubkey: PublicKey,
             remoteFundingPubkey: PublicKey,
             localCommitKeys: LocalCommitmentKeys,
             remoteCommitKeys: RemoteCommitmentKeys
@@ -215,13 +215,13 @@ object Helpers {
                 }
             }
 
-            val commitmentInput = Transactions.makeFundingInputInfo(fundingTxId, fundingTxOutputIndex, fundingAmount, localFundingKey.publicKey(), remoteFundingPubkey, commitmentFormat)
+            val commitmentInput = Transactions.makeFundingInputInfo(fundingTxId, fundingTxOutputIndex, fundingAmount, localFundingPubkey, remoteFundingPubkey, commitmentFormat)
             val (localCommitTx, localHtlcTxs) = Commitments.makeLocalTxs(
                 channelParams = channelParams,
                 commitParams = localCommitParams,
                 commitKeys = localCommitKeys,
                 commitTxNumber = localCommitmentIndex,
-                localFundingKey = localFundingKey,
+                localFundingPubkey = localFundingPubkey,
                 remoteFundingPubKey = remoteFundingPubkey,
                 commitmentInput = commitmentInput,
                 commitmentFormat = commitmentFormat,
@@ -232,7 +232,7 @@ object Helpers {
                 commitParams = remoteCommitParams,
                 commitKeys = remoteCommitKeys,
                 commitTxNumber = remoteCommitmentIndex,
-                localFundingKey = localFundingKey,
+                localFundingPubkey = localFundingPubkey,
                 remoteFundingPubKey = remoteFundingPubkey,
                 commitmentInput = commitmentInput,
                 commitmentFormat = commitmentFormat,
@@ -266,13 +266,12 @@ object Helpers {
 
         fun isValidFinalScriptPubkey(scriptPubKey: ByteVector, allowAnySegwit: Boolean, allowOpReturn: Boolean): Boolean = isValidFinalScriptPubkey(scriptPubKey.toByteArray(), allowAnySegwit, allowOpReturn)
 
-        fun createShutdown(channelKeys: ChannelKeys, commitment: FullCommitment, localScriptOverride: ByteVector? = null): Pair<Transactions.LocalNonce?, Shutdown> {
+        fun createShutdown(channelKeys: ChannelKeys, commitment: FullCommitment, localScriptOverride: ByteVector? = null): Pair<FundingSigner.PublishedNonceSession?, Shutdown> {
             val localScript = localScriptOverride ?: commitment.channelParams.localParams.defaultFinalScriptPubKey
             return when (commitment.commitmentFormat) {
                 Transactions.CommitmentFormat.SimpleTaprootChannels -> {
                     // We create a fresh local closee nonce every time we send shutdown.
-                    val localFundingPubKey = channelKeys.fundingKey(commitment.fundingTxIndex).publicKey()
-                    val localCloseeNonce = NonceGenerator.signingNonce(localFundingPubKey, commitment.remoteFundingPubkey, commitment.fundingTxId)
+                    val localCloseeNonce = channelKeys.fundingSigner(commitment.fundingTxIndex).publishedNonceSession(commitment.fundingTxId, commitment.remoteFundingPubkey)
                     Pair(localCloseeNonce, Shutdown(commitment.channelId, localScript, localCloseeNonce.publicNonce))
                 }
                 Transactions.CommitmentFormat.AnchorOutputs -> Pair(null, Shutdown(commitment.channelId, localScript))
@@ -311,15 +310,19 @@ object Helpers {
             if (closingTxs.preferred == null || closingTxs.preferred.fee <= 0.sat) {
                 return Either.Left(CannotGenerateClosingTx(commitment.channelId))
             }
-            val localFundingKey = channelKeys.fundingKey(commitment.fundingTxIndex)
+            val fundingSigner = channelKeys.fundingSigner(commitment.fundingTxIndex)
             val tlvs = when (commitment.commitmentFormat) {
-                Transactions.CommitmentFormat.AnchorOutputs -> TlvStream(
-                    setOfNotNull(
-                        closingTxs.localAndRemote?.let { tx -> ClosingCompleteTlv.CloserAndCloseeOutputs(tx.sign(localFundingKey, commitment.remoteFundingPubkey).sig) },
-                        closingTxs.localOnly?.let { tx -> ClosingCompleteTlv.CloserOutputOnly(tx.sign(localFundingKey, commitment.remoteFundingPubkey).sig) },
-                        closingTxs.remoteOnly?.let { tx -> ClosingCompleteTlv.CloseeOutputOnly(tx.sign(localFundingKey, commitment.remoteFundingPubkey).sig) },
+                Transactions.CommitmentFormat.AnchorOutputs -> {
+                    // ECDSA signing genuinely needs the raw key: a threshold-backed channel cannot do this.
+                    val localFundingKey = fundingSigner.privateKey("sign closing txs (segwit-v0)")
+                    TlvStream(
+                        setOfNotNull(
+                            closingTxs.localAndRemote?.let { tx -> ClosingCompleteTlv.CloserAndCloseeOutputs(tx.sign(localFundingKey, commitment.remoteFundingPubkey).sig) },
+                            closingTxs.localOnly?.let { tx -> ClosingCompleteTlv.CloserOutputOnly(tx.sign(localFundingKey, commitment.remoteFundingPubkey).sig) },
+                            closingTxs.remoteOnly?.let { tx -> ClosingCompleteTlv.CloseeOutputOnly(tx.sign(localFundingKey, commitment.remoteFundingPubkey).sig) },
+                        )
                     )
-                )
+                }
                 Transactions.CommitmentFormat.SimpleTaprootChannels -> when (remoteNonce) {
                     null -> return Either.Left(MissingClosingNonce(commitment.channelId))
                     else -> {
@@ -327,8 +330,7 @@ object Helpers {
                         // It will only happen if our peer sent an invalid nonce, in which case we cannot do anything anyway
                         // apart from eventually force-closing.
                         fun localSig(tx: Transactions.ClosingTx): ChannelSpendSignature.PartialSignatureWithNonce? {
-                            val localNonce = NonceGenerator.signingNonce(localFundingKey.publicKey(), commitment.remoteFundingPubkey, commitment.fundingTxId)
-                            return tx.partialSign(localFundingKey, commitment.remoteFundingPubkey, mapOf(), localNonce, listOf(localNonce.publicNonce, remoteNonce)).right
+                            return fundingSigner.signWithFreshNonce(tx, commitment.remoteFundingPubkey, mapOf(), commitment.fundingTxId, remoteNonce).right
                         }
 
                         TlvStream(
@@ -357,8 +359,8 @@ object Helpers {
             localScriptPubkey: ByteVector,
             remoteScriptPubkey: ByteVector,
             closingComplete: ClosingComplete,
-            localNonce: Transactions.LocalNonce?
-        ): Either<ChannelException, Triple<Transactions.ClosingTx, ClosingSig, Transactions.LocalNonce?>> {
+            localNonce: FundingSigner.PublishedNonceSession?
+        ): Either<ChannelException, Triple<Transactions.ClosingTx, ClosingSig, FundingSigner.PublishedNonceSession?>> {
             val closingFee = Transactions.ClosingTxFee.PaidByThem(closingComplete.fees)
             val closingTxs = Transactions.makeClosingTxs(commitment.commitInput(channelKeys), commitment.localCommit.spec, closingFee, closingComplete.lockTime, localScriptPubkey, remoteScriptPubkey)
             // If our output isn't dust, they must provide a signature for a transaction that includes it.
@@ -387,12 +389,13 @@ object Helpers {
                         null -> Either.Left(MissingCloseSignature(commitment.channelId))
                         else -> {
                             val (closingTx, remoteSig, sigToTlv) = preferred
-                            val localFundingKey = channelKeys.fundingKey(commitment.fundingTxIndex)
-                            if (!closingTx.checkRemotePartialSignature(localFundingKey.publicKey(), commitment.remoteFundingPubkey, remoteSig, localNonce.publicNonce)) {
+                            val fundingSigner = channelKeys.fundingSigner(commitment.fundingTxIndex)
+                            val localFundingPubkey = fundingSigner.publicKey
+                            if (!closingTx.checkRemotePartialSignature(localFundingPubkey, commitment.remoteFundingPubkey, remoteSig, localNonce.publicNonce)) {
                                 return Either.Left(InvalidCloseSignature(commitment.channelId, closingTx.tx.txid))
                             }
-                            val localSig = closingTx.partialSign(localFundingKey, commitment.remoteFundingPubkey, mapOf(), localNonce, listOf(localNonce.publicNonce, remoteSig.nonce)).right
-                            val signedTx = localSig?.let { closingTx.aggregateSigs(localFundingKey.publicKey(), commitment.remoteFundingPubkey, it, remoteSig, mapOf()).right }
+                            val localSig = fundingSigner.signWithPublishedNonce(closingTx, commitment.remoteFundingPubkey, mapOf(), localNonce, remoteSig.nonce).right
+                            val signedTx = localSig?.let { closingTx.aggregateSigs(localFundingPubkey, commitment.remoteFundingPubkey, it, remoteSig, mapOf()).right }
                             if (localSig == null || signedTx == null) {
                                 return Either.Left(InvalidCloseSignature(commitment.channelId, closingTx.tx.txid))
                             }
@@ -400,7 +403,7 @@ object Helpers {
                             if (!signedClosingTx.validate(mapOf())) {
                                 return Either.Left(InvalidCloseSignature(commitment.channelId, closingTx.tx.txid))
                             }
-                            val nextLocalNonce = NonceGenerator.signingNonce(localFundingKey.publicKey(), commitment.remoteFundingPubkey, commitment.fundingTxId)
+                            val nextLocalNonce = fundingSigner.publishedNonceSession(commitment.fundingTxId, commitment.remoteFundingPubkey)
                             val tlvs = TlvStream(sigToTlv(localSig.partialSig), ClosingSigTlv.NextCloseeNonce(nextLocalNonce.publicNonce))
                             Either.Right(Triple(signedClosingTx, ClosingSig(commitment.channelId, remoteScriptPubkey, localScriptPubkey, closingComplete.fees, closingComplete.lockTime, tlvs), nextLocalNonce))
                         }
@@ -426,7 +429,7 @@ object Helpers {
                         null -> Either.Left(MissingCloseSignature(commitment.channelId))
                         else -> {
                             val (closingTx, remoteSig, sigToTlv) = preferred
-                            val localFundingKey = channelKeys.fundingKey(commitment.fundingTxIndex)
+                            val localFundingKey = channelKeys.fundingSigner(commitment.fundingTxIndex).privateKey("sign closing tx (segwit-v0)")
                             val localSig = closingTx.sign(localFundingKey, commitment.remoteFundingPubkey)
                             val signedTx = closingTx.aggregateSigs(localFundingKey.publicKey(), commitment.remoteFundingPubkey, localSig, ChannelSpendSignature.IndividualSignature(remoteSig))
                             val signedClosingTx = closingTx.copy(tx = signedTx)
@@ -476,11 +479,13 @@ object Helpers {
                 null -> Either.Left(MissingCloseSignature(commitment.channelId))
                 else -> {
                     val (closingTx, remoteSig) = preferred
-                    val localFundingKey = channelKeys.fundingKey(commitment.fundingTxIndex)
+                    val localFundingPubkey = channelKeys.fundingPublicKey(commitment.fundingTxIndex)
                     when (remoteSig) {
                         is ChannelSpendSignature.IndividualSignature -> {
+                            // ECDSA signing genuinely needs the raw key: a threshold-backed channel cannot do this.
+                            val localFundingKey = channelKeys.fundingSigner(commitment.fundingTxIndex).privateKey("sign closing tx (segwit-v0)")
                             val localSig = closingTx.sign(localFundingKey, commitment.remoteFundingPubkey)
-                            val signedTx = closingTx.aggregateSigs(localFundingKey.publicKey(), commitment.remoteFundingPubkey, localSig, remoteSig)
+                            val signedTx = closingTx.aggregateSigs(localFundingPubkey, commitment.remoteFundingPubkey, localSig, remoteSig)
                             val signedClosingTx = closingTx.copy(tx = signedTx)
                             if (!signedClosingTx.validate(extraUtxos = mapOf())) {
                                 Either.Left(InvalidCloseSignature(commitment.channelId, signedClosingTx.tx.txid))
@@ -497,7 +502,7 @@ object Helpers {
                             }
                             if (localSig == null) return Either.Left(InvalidCloseSignature(commitment.channelId, closingTx.tx.txid))
 
-                            val signedClosingTx = closingTx.aggregateSigs(localFundingKey.publicKey(), commitment.remoteFundingPubkey, localSig, remoteSig, mapOf())
+                            val signedClosingTx = closingTx.aggregateSigs(localFundingPubkey, commitment.remoteFundingPubkey, localSig, remoteSig, mapOf())
                                 .map { closingTx.copy(tx = it)  }
                                 .right ?: return Either.Left(InvalidCloseSignature(commitment.channelId, closingTx.tx.txid))
 
@@ -549,9 +554,9 @@ object Helpers {
 
             /** Create outputs of the local commitment transaction, allowing us for example to identify HTLC outputs. */
             fun makeLocalCommitTxOutputs(channelKeys: ChannelKeys, commitKeys: LocalCommitmentKeys, commitment: FullCommitment): List<CommitmentOutput> {
-                val fundingKey = channelKeys.fundingKey(commitment.fundingTxIndex)
+                val localFundingPubkey = channelKeys.fundingPublicKey(commitment.fundingTxIndex)
                 return makeCommitTxOutputs(
-                    fundingKey.publicKey(),
+                    localFundingPubkey,
                     commitment.remoteFundingPubkey,
                     commitKeys.publicKeys,
                     commitment.localChannelParams.paysCommitTxFees,
@@ -753,10 +758,10 @@ object Helpers {
 
             /** Create outputs of the remote commitment transaction, allowing us for example to identify HTLC outputs. */
             fun makeRemoteCommitTxOutputs(channelKeys: ChannelKeys, commitKeys: RemoteCommitmentKeys, commitment: FullCommitment, remoteCommit: RemoteCommit): List<CommitmentOutput> {
-                val fundingKey = channelKeys.fundingKey(commitment.fundingTxIndex)
+                val localFundingPubkey = channelKeys.fundingPublicKey(commitment.fundingTxIndex)
                 return makeCommitTxOutputs(
                     commitment.remoteFundingPubkey,
-                    fundingKey.publicKey(),
+                    localFundingPubkey,
                     commitKeys.publicKeys,
                     !commitment.localChannelParams.paysCommitTxFees,
                     commitment.remoteCommitParams.dustLimit,

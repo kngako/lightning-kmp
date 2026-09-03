@@ -10,6 +10,7 @@ import fr.acinq.lightning.blockchain.WatchConfirmedTriggered
 import fr.acinq.lightning.blockchain.WatchSpent
 import fr.acinq.lightning.blockchain.WatchSpentTriggered
 import fr.acinq.lightning.channel.*
+import fr.acinq.lightning.crypto.FundingSigner
 import fr.acinq.lightning.transactions.Transactions
 import fr.acinq.lightning.wire.*
 
@@ -24,7 +25,7 @@ data class Negotiating(
     val publishedClosingTxs: List<Transactions.ClosingTx>,
     val waitingSinceBlock: Long, // how many blocks since we initiated the closing
     val closeCommand: ChannelCommand.Close.MutualClose?,
-    val localCloseeNonce: Transactions.LocalNonce?,
+    val localCloseeNonce: FundingSigner.PublishedNonceSession?,
     val remoteCloseeNonce: IndividualNonce?,
     val localClosingComplete: ClosingComplete?,
 ) : ChannelStateWithCommitments() {

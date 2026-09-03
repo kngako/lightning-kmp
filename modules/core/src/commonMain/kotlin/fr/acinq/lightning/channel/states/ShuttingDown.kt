@@ -6,6 +6,7 @@ import fr.acinq.bitcoin.utils.Either
 import fr.acinq.lightning.blockchain.WatchConfirmedTriggered
 import fr.acinq.lightning.blockchain.WatchSpentTriggered
 import fr.acinq.lightning.channel.*
+import fr.acinq.lightning.crypto.FundingSigner
 import fr.acinq.lightning.transactions.Transactions
 import fr.acinq.lightning.wire.*
 
@@ -15,7 +16,7 @@ data class ShuttingDown(
     val localShutdown: Shutdown,
     val remoteShutdown: Shutdown,
     val closeCommand: ChannelCommand.Close.MutualClose?,
-    val localCloseeNonce: Transactions.LocalNonce?
+    val localCloseeNonce: FundingSigner.PublishedNonceSession?
 ) : ChannelStateWithCommitments() {
     override fun updateCommitments(input: Commitments): ChannelStateWithCommitments = this.copy(commitments = input)
 

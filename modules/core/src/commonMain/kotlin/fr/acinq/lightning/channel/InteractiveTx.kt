@@ -11,8 +11,8 @@ import fr.acinq.lightning.MilliSatoshi
 import fr.acinq.lightning.blockchain.electrum.WalletState
 import fr.acinq.lightning.blockchain.fee.FeeratePerKw
 import fr.acinq.lightning.crypto.ChannelKeys
+import fr.acinq.lightning.crypto.FundingSigner
 import fr.acinq.lightning.crypto.KeyManager
-import fr.acinq.lightning.crypto.NonceGenerator
 import fr.acinq.lightning.crypto.SwapInOnChainKeys
 import fr.acinq.lightning.logging.MDCLogger
 import fr.acinq.lightning.transactions.*
@@ -40,18 +40,26 @@ data class SharedFundingInput(
 
     val weight: Int = commitmentFormat.fundingInputWeight
 
-    /** Our funding key for the *previous* channel output that we're spending with this splice. */
-    fun previousFundingKey(channelKeys: ChannelKeys): PrivateKey = channelKeys.fundingKey(fundingTxIndex)
+    /** Our funding pubkey for the *previous* channel output that we're spending with this splice. */
+    fun previousFundingPubkey(channelKeys: ChannelKeys): PublicKey = channelKeys.fundingPublicKey(fundingTxIndex)
 
     fun sign(session: InteractiveTxSession, tx: Transaction, spentUtxos: Map<OutPoint, TxOut>): Either<ChannelException, ChannelSpendSignature> {
-        val fundingKey = previousFundingKey(session.channelKeys)
+        // The signer for the PREVIOUS funding output -- the one this shared input spends -- which is
+        // not the same index as the session's own signer for the new funding output.
+        val previousFundingSigner = session.channelKeys.fundingSigner(fundingTxIndex)
         val spliceTx = Transactions.SpliceTx(info, tx)
         return when (commitmentFormat) {
-            Transactions.CommitmentFormat.AnchorOutputs -> Either.Right(spliceTx.sign(fundingKey, remoteFundingPubkey, spentUtxos))
+            Transactions.CommitmentFormat.AnchorOutputs -> {
+                // Segwit v0 splices sign with ECDSA, which no threshold signer implements: a
+                // group-backed channel fails loudly by name here rather than producing something
+                // unverifiable. Taproot channels below go through the seam instead.
+                val fundingKey = previousFundingSigner.privateKey("sign splice shared input (segwit v0)")
+                Either.Right(spliceTx.sign(fundingKey, remoteFundingPubkey, spentUtxos))
+            }
             Transactions.CommitmentFormat.SimpleTaprootChannels -> {
-                val localNonce = session.localFundingNonce ?: return Either.Left(MissingFundingNonce(session.fundingParams.channelId, tx.txid))
+                val localSession = session.localFundingNonce ?: return Either.Left(MissingFundingNonce(session.fundingParams.channelId, tx.txid))
                 val remoteNonce = session.remoteFundingNonce ?: return Either.Left(MissingFundingNonce(session.fundingParams.channelId, tx.txid))
-                when (val psig = spliceTx.partialSign(fundingKey, remoteFundingPubkey, spentUtxos, localNonce, listOf(localNonce.publicNonce, remoteNonce))) {
+                when (val psig = previousFundingSigner.signWithPublishedNonce(spliceTx, remoteFundingPubkey, spentUtxos, localSession, remoteNonce)) {
                     is Either.Left -> Either.Left(InvalidFundingNonce(session.fundingParams.channelId, tx.txid))
                     is Either.Right -> Either.Right(psig.value)
                 }
@@ -111,11 +119,11 @@ data class InteractiveTxParams(
     // If we don't have a shared input, this isn't a splice: it is the initial channel funding transaction.
     val fundingTxIndex = sharedInput?.let { it.fundingTxIndex + 1 } ?: 0
 
-    /** Our funding key for the *next* channel output created by this splice. */
-    fun fundingKey(channelKeys: ChannelKeys): PrivateKey = channelKeys.fundingKey(fundingTxIndex)
+    /** Our funding pubkey for the *next* channel output created by this splice. */
+    fun fundingPubkey(channelKeys: ChannelKeys): PublicKey = channelKeys.fundingPublicKey(fundingTxIndex)
 
     fun fundingPubkeyScript(channelKeys: ChannelKeys): ByteVector {
-        return Transactions.makeFundingScript(fundingKey(channelKeys).publicKey(), remoteFundingPubkey, commitmentFormat).pubkeyScript
+        return Transactions.makeFundingScript(fundingPubkey(channelKeys), remoteFundingPubkey, commitmentFormat).pubkeyScript
     }
 
     fun liquidityFees(purchase: LiquidityAds.Purchase?): MilliSatoshi = purchase?.let { l ->
@@ -576,7 +584,7 @@ data class PartiallySignedSharedTransaction(override val tx: SharedTransaction, 
         if (remoteSigs.witnesses.size != tx.remoteOnlyInputs().size) return null
         if (remoteSigs.txId != localSigs.txId) return null
         val sharedSigs = fundingParams.sharedInput?.let { input ->
-            val localFundingPubkey = input.previousFundingKey(channelKeys).publicKey()
+            val localFundingPubkey = input.previousFundingPubkey(channelKeys)
             val spliceTx = Transactions.SpliceTx(input.info, tx.buildUnsignedTx())
             val signedTx = when (input.commitmentFormat) {
                 Transactions.CommitmentFormat.AnchorOutputs -> spliceTx.aggregateSigs(
@@ -696,7 +704,7 @@ data class InteractiveTxSession(
     val inputsReceivedCount: Int = 0,
     val outputsReceivedCount: Int = 0,
     val swapInSecretNonces: Map<Long, Pair<SecretNonce, IndividualNonce>> = mapOf(),
-    val localFundingNonce: Transactions.LocalNonce? = null,
+    val localFundingNonce: FundingSigner.PublishedNonceSession? = null,
 ) {
 
     //                      Example flow:
@@ -735,14 +743,16 @@ data class InteractiveTxSession(
         previousTxs,
         localHtlcs,
         localFundingNonce = fundingParams.sharedInput?.let {
-            // If we're splicing an existing channel, we create a random local nonce for this interactive-tx session.
-            val fundingKey = it.previousFundingKey(channelKeys).publicKey()
-            NonceGenerator.signingNonce(fundingKey, it.remoteFundingPubkey, it.info.outPoint.txid)
+            // If we're splicing an existing channel, we start a nonce session for this interactive-tx
+            // session: its public part goes out in tx_complete's funding-nonce TLV, and it later signs
+            // the shared input spending the PREVIOUS funding output -- hence the previous funding
+            // index, its txid, and the peer's funding key for that output.
+            channelKeys.fundingSigner(it.fundingTxIndex).publishedNonceSession(it.info.outPoint.txid, it.remoteFundingPubkey)
         }
     )
 
     val isComplete: Boolean = txCompleteSent != null && txCompleteReceived != null
-    val localFundingKey: PrivateKey = fundingParams.fundingKey(channelKeys)
+    val fundingSigner: FundingSigner = channelKeys.fundingSigner(fundingParams.fundingTxIndex)
     val remoteFundingNonce: IndividualNonce? = txCompleteReceived?.fundingNonce
     val currentRemoteCommitNonce: IndividualNonce? = txCompleteReceived?.commitNonces?.commitNonce
     val nextRemoteCommitNonce: IndividualNonce? = txCompleteReceived?.commitNonces?.nextCommitNonce
@@ -781,8 +791,8 @@ data class InteractiveTxSession(
                         ).txid
                         TxComplete(
                             channelId = fundingParams.channelId,
-                            commitNonce = NonceGenerator.verificationNonce(fundingTxId, localFundingKey, fundingParams.remoteFundingPubkey, localCommitIndex).publicNonce,
-                            nextCommitNonce = NonceGenerator.verificationNonce(fundingTxId, localFundingKey, fundingParams.remoteFundingPubkey, localCommitIndex + 1).publicNonce,
+                            commitNonce = fundingSigner.verificationNonce(FundingSigner.VerificationNonceId(fundingTxId, fundingParams.remoteFundingPubkey, localCommitIndex)),
+                            nextCommitNonce = fundingSigner.verificationNonce(FundingSigner.VerificationNonceId(fundingTxId, fundingParams.remoteFundingPubkey, localCommitIndex + 1)),
                             fundingNonce = localFundingNonce?.publicNonce,
                             swapInNonces = swapInNonces,
                         )
@@ -1109,37 +1119,39 @@ data class InteractiveTxSigningSession(
     // If we haven't received the remote commit_sig, we will request a retransmission on reconnection.
     val retransmitRemoteCommitSig: Boolean = localCommit.isLeft
 
-    fun localFundingKey(channelKeys: ChannelKeys): PrivateKey = fundingParams.fundingKey(channelKeys)
+    fun localFundingPubkey(channelKeys: ChannelKeys): PublicKey = channelKeys.fundingPublicKey(fundingParams.fundingTxIndex)
 
-    fun commitInput(fundingKey: PrivateKey): Transactions.InputInfo {
-        val fundingScript = Transactions.makeFundingScript(fundingKey.publicKey(), fundingParams.remoteFundingPubkey, fundingParams.commitmentFormat).pubkeyScript
+    fun fundingSigner(channelKeys: ChannelKeys): FundingSigner = channelKeys.fundingSigner(fundingParams.fundingTxIndex)
+
+    fun commitInput(localFundingPubkey: PublicKey): Transactions.InputInfo {
+        val fundingScript = Transactions.makeFundingScript(localFundingPubkey, fundingParams.remoteFundingPubkey, fundingParams.commitmentFormat).pubkeyScript
         val fundingOutput = OutPoint(fundingTx.txId, fundingTx.tx.buildUnsignedTx().txOut.indexOfFirst { it.amount == fundingParams.fundingAmount && it.publicKeyScript == fundingScript }.toLong())
         return Transactions.InputInfo(fundingOutput, TxOut(fundingParams.fundingAmount, fundingScript))
     }
 
-    fun commitInput(channelKeys: ChannelKeys): Transactions.InputInfo = commitInput(localFundingKey(channelKeys))
+    fun commitInput(channelKeys: ChannelKeys): Transactions.InputInfo = commitInput(localFundingPubkey(channelKeys))
 
     /** Nonce for the current commitment, which our peer will need if they must re-send their commit_sig for our current commitment transaction. */
-    fun currentCommitNonce(channelKeys: ChannelKeys): Transactions.LocalNonce? = when (localCommit) {
-        is Either.Left -> NonceGenerator.verificationNonce(fundingTxId, localFundingKey(channelKeys), fundingParams.remoteFundingPubkey, localCommitIndex)
+    fun currentCommitNonce(channelKeys: ChannelKeys): IndividualNonce? = when (localCommit) {
+        is Either.Left -> fundingSigner(channelKeys).verificationNonce(FundingSigner.VerificationNonceId(fundingTxId, fundingParams.remoteFundingPubkey, localCommitIndex))
         is Either.Right -> null
     }
 
     /** Nonce for the next commitment, which our peer will need to sign our next commitment transaction. */
-    fun nextCommitNonce(channelKeys: ChannelKeys): Transactions.LocalNonce = NonceGenerator.verificationNonce(fundingTxId, localFundingKey(channelKeys), fundingParams.remoteFundingPubkey, localCommitIndex + 1)
+    fun nextCommitNonce(channelKeys: ChannelKeys): IndividualNonce = fundingSigner(channelKeys).verificationNonce(FundingSigner.VerificationNonceId(fundingTxId, fundingParams.remoteFundingPubkey, localCommitIndex + 1))
 
     fun receiveCommitSig(channelKeys: ChannelKeys, channelParams: ChannelParams, remoteCommitSig: CommitSig, currentBlockHeight: Long, logger: MDCLogger): Pair<InteractiveTxSigningSession, InteractiveTxSigningSessionAction> {
         return when (localCommit) {
             is Either.Left -> {
                 val localCommitIndex = localCommit.value.index
-                val fundingKey = localFundingKey(channelKeys)
+                val fundingSigner = fundingSigner(channelKeys)
                 val commitKeys = channelKeys.localCommitmentKeys(channelParams, localCommitIndex)
-                val fundingInput = commitInput(fundingKey)
+                val fundingInput = commitInput(fundingSigner.publicKey)
                 when (val signedLocalCommit = LocalCommit.fromCommitSig(
                     channelParams = channelParams,
                     commitParams = localCommitParams,
                     commitKeys = commitKeys,
-                    fundingKey = fundingKey,
+                    fundingSigner = fundingSigner,
                     remoteFundingPubKey = fundingParams.remoteFundingPubkey,
                     commitInput = fundingInput,
                     commit = remoteCommitSig,
@@ -1226,7 +1238,7 @@ data class InteractiveTxSigningSession(
             localHtlcs: Set<DirectedHtlc>,
             logger: MDCLogger
         ): Either<ChannelException, Pair<InteractiveTxSigningSession, CommitSig>> {
-            val fundingKey = session.localFundingKey
+            val fundingSigner = session.fundingSigner
             val localCommitKeys = session.channelKeys.localCommitmentKeys(channelParams, localCommitmentIndex)
             val remoteCommitKeys = session.channelKeys.remoteCommitmentKeys(channelParams, remotePerCommitmentPoint)
             val unsignedTx = sharedTx.buildUnsignedTx()
@@ -1246,17 +1258,16 @@ data class InteractiveTxSigningSession(
                 commitmentFormat = fundingParams.commitmentFormat,
                 fundingTxId = unsignedTx.txid,
                 fundingTxOutputIndex = sharedOutputIndex,
-                localFundingKey = fundingKey,
+                localFundingPubkey = fundingSigner.publicKey,
                 remoteFundingPubkey = fundingParams.remoteFundingPubkey,
                 localCommitKeys = localCommitKeys,
                 remoteCommitKeys = remoteCommitKeys,
             ).flatMap { firstCommitTx ->
                 val localSigOfRemoteCommitTx = when (fundingParams.commitmentFormat) {
-                    Transactions.CommitmentFormat.AnchorOutputs -> firstCommitTx.remoteCommitTx.sign(fundingKey, fundingParams.remoteFundingPubkey)
+                    Transactions.CommitmentFormat.AnchorOutputs -> firstCommitTx.remoteCommitTx.sign(fundingSigner.privateKey("sign first remote commit tx (segwit-v0)"), fundingParams.remoteFundingPubkey)
                     Transactions.CommitmentFormat.SimpleTaprootChannels -> {
                         val remoteNonce = session.currentRemoteCommitNonce ?: return Either.Left(MissingCommitNonce(channelParams.channelId, unsignedTx.txid, remoteCommitmentIndex))
-                        val localNonce = NonceGenerator.signingNonce(fundingKey.publicKey(), fundingParams.remoteFundingPubkey, unsignedTx.txid)
-                        when (val psig = firstCommitTx.remoteCommitTx.partialSign(fundingKey, fundingParams.remoteFundingPubkey, mapOf(), localNonce, listOf(localNonce.publicNonce, remoteNonce))) {
+                        when (val psig = fundingSigner.signWithFreshNonce(firstCommitTx.remoteCommitTx, fundingParams.remoteFundingPubkey, mapOf(), unsignedTx.txid, remoteNonce)) {
                             is Either.Left -> return Either.Left(InvalidCommitNonce(channelParams.channelId, unsignedTx.txid, remoteCommitmentIndex))
                             is Either.Right -> psig.value
                         }

@@ -215,6 +215,17 @@ call the previous code. At this point nothing calls the seam yet.
 
 ## Phase 2 — Route every funding-key call site — ~0.5–1 day
 
+**Status: done.** Both grep gates pass exactly as specified below: no `fundingKey(` survives outside
+`crypto/KeyManager.kt`, and all 8 `privateKey("...")` escape hatches are segwit-v0 ECDSA branches.
+The coverage probe reproduced the reference's result to the test — planting `error()` in the routed
+taproot shared-input branch fails **39 of 54** `SpliceTestsCommon` tests, the same 39 the reference
+reports. Full suite green at 918.
+
+Two test-side call sites were forced by the routing and fixed here rather than in phase 4, because
+they are call sites rather than injection plumbing: `TestsHelper.useAlternativeCommitSig` and
+`AnchorOutputsTestsCommon` both pass a funding key to `Commitments.makeLocalTxs`, whose parameter
+became `localFundingPubkey`.
+
 Port `5e44eac7` at HEAD state, which folds in `78b7718e`'s renames and `592f3844`'s taproot
 shared-input routing (splice design A). 13 files:
 

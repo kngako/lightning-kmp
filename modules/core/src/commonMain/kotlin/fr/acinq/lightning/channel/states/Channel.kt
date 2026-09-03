@@ -14,8 +14,8 @@ import fr.acinq.lightning.blockchain.WatchSpentTriggered
 import fr.acinq.lightning.blockchain.fee.OnChainFeerates
 import fr.acinq.lightning.channel.*
 import fr.acinq.lightning.crypto.ChannelKeys
+import fr.acinq.lightning.crypto.FundingSigner
 import fr.acinq.lightning.crypto.KeyManager
-import fr.acinq.lightning.crypto.NonceGenerator
 import fr.acinq.lightning.db.ChannelCloseOutgoingPayment.ChannelClosingType
 import fr.acinq.lightning.logging.LoggingContext
 import fr.acinq.lightning.logging.MDCLogger
@@ -305,14 +305,14 @@ sealed class PersistedChannelState : ChannelState() {
             val (currentCommitNonce, nextCommitNonce) = when (state.signingSession.fundingParams.commitmentFormat) {
                 Transactions.CommitmentFormat.AnchorOutputs -> Pair(null, null)
                 Transactions.CommitmentFormat.SimpleTaprootChannels -> {
-                    val localFundingKey = channelKeys().fundingKey(fundingTxIndex = 0)
+                    val fundingSigner = channelKeys().fundingSigner(fundingTxIndex = 0)
                     val remoteFundingPubKey = state.signingSession.fundingParams.remoteFundingPubkey
                     val currentCommitNonce = when (state.signingSession.localCommit) {
-                        is Either.Left -> NonceGenerator.verificationNonce(nextFundingTxId, localFundingKey, remoteFundingPubKey, 0)
+                        is Either.Left -> fundingSigner.verificationNonce(FundingSigner.VerificationNonceId(nextFundingTxId, remoteFundingPubKey, 0))
                         is Either.Right -> null
                     }
-                    val nextCommitNonce = NonceGenerator.verificationNonce(nextFundingTxId, localFundingKey, remoteFundingPubKey, 1)
-                    Pair(currentCommitNonce?.publicNonce, nextCommitNonce.publicNonce)
+                    val nextCommitNonce = fundingSigner.verificationNonce(FundingSigner.VerificationNonceId(nextFundingTxId, remoteFundingPubKey, 1))
+                    Pair(currentCommitNonce, nextCommitNonce)
                 }
             }
             ChannelReestablish(
@@ -343,9 +343,8 @@ sealed class PersistedChannelState : ChannelState() {
                 when (c.commitmentFormat) {
                     Transactions.CommitmentFormat.AnchorOutputs -> null
                     Transactions.CommitmentFormat.SimpleTaprootChannels -> {
-                        val localFundingKey = channelKeys.fundingKey(c.fundingTxIndex)
-                        val localCommitNonce = NonceGenerator.verificationNonce(c.fundingTxId, localFundingKey, c.remoteFundingPubkey, c.localCommit.index + 1)
-                        c.fundingTxId to localCommitNonce.publicNonce
+                        val localCommitNonce = channelKeys.fundingSigner(c.fundingTxIndex).verificationNonce(FundingSigner.VerificationNonceId(c.fundingTxId, c.remoteFundingPubkey, c.localCommit.index + 1))
+                        c.fundingTxId to localCommitNonce
                     }
                 }
             }
@@ -360,8 +359,8 @@ sealed class PersistedChannelState : ChannelState() {
                     null -> Pair(null, null)
                     Transactions.CommitmentFormat.AnchorOutputs -> Pair(null, null)
                     Transactions.CommitmentFormat.SimpleTaprootChannels -> {
-                        val currentCommitNonce = signingSession.currentCommitNonce(channelKeys)?.publicNonce
-                        val nextCommitNonce = signingSession.nextCommitNonce(channelKeys).publicNonce
+                        val currentCommitNonce = signingSession.currentCommitNonce(channelKeys)
+                        val nextCommitNonce = signingSession.nextCommitNonce(channelKeys)
                         Pair(currentCommitNonce, signingSession.fundingTxId to nextCommitNonce)
                     }
                 }
@@ -419,11 +418,14 @@ sealed class ChannelStateWithCommitments : PersistedChannelState() {
     }
 
     internal fun ChannelContext.createChannelReady(): ChannelReady {
-        val localFundingKey = channelKeys().fundingKey(fundingTxIndex = 0)
+        // NB: even after splices, the verification nonce for commit index 1 is derived with the first funding
+        // transaction's key (index 0): this preserves the pre-existing behaviour, and a threshold-backed channel
+        // only ever has a funding key at index 0 anyway.
+        val fundingSigner = channelKeys().fundingSigner(fundingTxIndex = 0)
         val remoteFundingKey = commitments.latest.remoteFundingPubkey
         val nextPerCommitmentPoint = channelKeys().commitmentPoint(1)
-        val nextCommitNonce = NonceGenerator.verificationNonce(commitments.latest.fundingTxId, localFundingKey, remoteFundingKey, commitIndex = 1)
-        return ChannelReady(channelId, nextPerCommitmentPoint, ShortChannelId.peerId(staticParams.nodeParams.nodeId), nextCommitNonce.publicNonce)
+        val nextCommitNonce = fundingSigner.verificationNonce(FundingSigner.VerificationNonceId(commitments.latest.fundingTxId, remoteFundingKey, commitIndex = 1))
+        return ChannelReady(channelId, nextPerCommitmentPoint, ShortChannelId.peerId(staticParams.nodeParams.nodeId), nextCommitNonce)
     }
 
     /**
@@ -455,7 +457,7 @@ sealed class ChannelStateWithCommitments : PersistedChannelState() {
         cmd: ChannelCommand.Close.MutualClose?,
         commitments: Commitments,
         localShutdown: Shutdown,
-        localCloseeNonce: Transactions.LocalNonce?,
+        localCloseeNonce: FundingSigner.PublishedNonceSession?,
         remoteShutdown: Shutdown,
         actions: List<ChannelAction>,
     ): Pair<Negotiating, List<ChannelAction>> {

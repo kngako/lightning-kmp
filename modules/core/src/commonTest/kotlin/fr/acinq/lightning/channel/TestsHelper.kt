@@ -515,7 +515,7 @@ object TestsHelper {
 
     fun useAlternativeCommitSig(s: LNChannel<ChannelState>, commitment: Commitment, feerate: FeeratePerKw): Transaction {
         val channelKeys = s.commitments.channelKeys(s.ctx.keyManager)
-        val fundingKey = commitment.localFundingKey(channelKeys)
+        val localFundingPubkey = commitment.localFundingPubkey(channelKeys)
         val commitKeys = channelKeys.localCommitmentKeys(s.commitments.channelParams, commitment.localCommit.index)
         val alternativeSpec = commitment.localCommit.spec.copy(feerate = feerate)
         val remoteFundingPubKey = commitment.remoteFundingPubkey
@@ -525,9 +525,9 @@ object TestsHelper {
             commitParams = commitment.localCommitParams,
             commitKeys = commitKeys,
             commitTxNumber = commitment.localCommit.index,
-            localFundingKey = fundingKey,
+            localFundingPubkey = localFundingPubkey,
             remoteFundingPubKey = remoteFundingPubKey,
-            commitmentInput = commitment.commitInput(fundingKey),
+            commitmentInput = commitment.commitInput(localFundingPubkey),
             commitmentFormat = commitment.commitmentFormat,
             spec = alternativeSpec,
         )

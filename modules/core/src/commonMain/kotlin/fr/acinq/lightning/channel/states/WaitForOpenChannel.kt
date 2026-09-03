@@ -49,7 +49,7 @@ data class WaitForOpenChannel(
                             val channelFeatures = ChannelFeatures(channelType, localFeatures = localChannelParams.features, remoteFeatures = remoteInit.features)
                             val minimumDepth = if (staticParams.useZeroConf) 0 else staticParams.nodeParams.minDepthBlocks
                             val channelKeys = keyManager.channelKeys(localChannelParams.fundingKeyPath)
-                            val localFundingPubkey = channelKeys.fundingKey(0).publicKey()
+                            val localFundingPubkey = channelKeys.fundingPublicKey(0)
                             val fundingScript = Transactions.makeFundingScript(localFundingPubkey, open.fundingPubkey, channelType.commitmentFormat).pubkeyScript
                             val requestFunding = open.requestFunding
                             val willFund = when {
