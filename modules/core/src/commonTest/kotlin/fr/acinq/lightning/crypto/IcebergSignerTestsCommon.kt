@@ -123,7 +123,7 @@ class IcebergSignerTestsCommon : LightningTestSuite() {
     }
 
     @Test
-    fun `round one refuses a short, out-of-range or duplicated contributor set`() {
+    fun `round one refuses a short or out-of-range or duplicated contributor set`() {
         val group = IcebergSigner.keygen(4, 2, randomBytes32())
         assertFailsWith<IllegalArgumentException> { IcebergSigner.roundOne(group, listOf(1, 2), randomBytes32()) }
         assertFailsWith<IllegalArgumentException> { IcebergSigner.roundOne(group, listOf(1, 2, 5), randomBytes32()) }

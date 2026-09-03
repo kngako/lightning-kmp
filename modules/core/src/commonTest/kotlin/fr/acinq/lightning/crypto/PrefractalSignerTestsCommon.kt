@@ -39,7 +39,7 @@ class PrefractalSignerTestsCommon : LightningTestSuite() {
     }
 
     @Test
-    fun `the quorum is t in BOTH rounds, unlike iceberg`() {
+    fun `the quorum is t in BOTH rounds unlike iceberg`() {
         val group = PrefractalSigner.keygen(5, 3, randomBytes32())
         assertEquals(3, group.quorum)
         // t contributors is enough for round one. Iceberg would need 2t-1 = 5 here.
@@ -69,7 +69,7 @@ class PrefractalSignerTestsCommon : LightningTestSuite() {
      * must be refused instead.
      */
     @Test
-    fun `round two signers must EQUAL the round one contributors, not merely be a subset`() {
+    fun `round two signers must EQUAL the round one contributors and not merely be a subset`() {
         val group = PrefractalSigner.keygen(5, 3, randomBytes32())
         val sessionId = randomBytes32()
         val contributors = listOf(1, 2, 3, 4)
@@ -156,7 +156,7 @@ class PrefractalSignerTestsCommon : LightningTestSuite() {
     }
 
     @Test
-    fun `round one refuses a short, out-of-range or duplicated contributor set`() {
+    fun `round one refuses a short or out-of-range or duplicated contributor set`() {
         val group = PrefractalSigner.keygen(5, 3, randomBytes32())
         val sessionId = randomBytes32()
         assertFailsWith<IllegalArgumentException> { PrefractalSigner.roundOne(group, listOf(1, 2), sessionId) }

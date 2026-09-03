@@ -1,4 +1,4 @@
-package fr.acinq.lightning.iceberg
+package fr.acinq.lightning.crypto
 
 import fr.acinq.bitcoin.OutPoint
 import fr.acinq.bitcoin.PrivateKey
@@ -8,7 +8,6 @@ import fr.acinq.bitcoin.TxOut
 import fr.acinq.bitcoin.crypto.musig2.IndividualNonce
 import fr.acinq.bitcoin.utils.Either
 import fr.acinq.lightning.channel.ChannelSpendSignature
-import fr.acinq.lightning.crypto.FundingSigner
 import fr.acinq.lightning.transactions.Transactions
 
 /** A single call counter. Plain and non-atomic: this is commonTest, and the channel state machine
@@ -29,7 +28,10 @@ class CallCounter {
  * method (port of the reference's CountingFundingSigner). The methods cost different amounts of
  * threshold work, so the round split is observed here, not assumed:
  *
- *   verificationNonce         -> one round one (a nonce derivation over the 2t-1 quorum), no round two
+ * Scheme-independent: it counts FundingSigner calls, not group members, so it serves the iceberg
+ * and prefractal suites alike even though their quorums differ (2t-1 then t vs t then t).
+ *
+ *   verificationNonce         -> one round one (a nonce derivation over the round-one quorum), no round two
  *   signWithVerificationNonce -> one round one and one round two; its round one re-derives a nonce an
  *                                earlier verificationNonce already published, the redundancy a cache removes
  *   signWithFreshNonce        -> one round one and one round two, on a nonce never published
