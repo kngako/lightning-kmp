@@ -304,16 +304,16 @@ In `experimental/bitcoin-kmp/experimental/secp256k1-kmp/`. Two one-line wiring c
 and `secp256k1_prefractal.h` joins `src/nativeInterop/cinterop/libsecp256k1.def`, so cinterop picks
 the new functions up automatically. Four functions to expose, plus `frost_nonce_gen` reuse —
 with one caveat: the existing binding takes the group key as a nullable `XonlyPublicKey`
-(`Frost.kt:328`), so `FrostNested.generateNonce` forwards `groupPublicKey.xOnly()` through it
-(Phase 3) and no new binding is needed. The Kotlin binding names below stay `frostNested*`
-(they describe the composition); only the C names carry the `prefractal` module namespace.
+(`Frost.kt:328`), so `Prefractal.generateNonce` forwards `groupPublicKey.xOnly()` through it
+(Phase 3) and no new binding is needed. The Kotlin binding names below (`prefractal*`) mirror the C module namespace so the layering
+is obvious at every level.
 
 1. `src/commonMain/kotlin/fr/acinq/secp256k1/Secp256k1.kt` — add to `interface Secp256k1`
    (KDoc style of `frostSign`, line 454):
-   - `fun frostNestedNonceAgg(pubnonces: Array<ByteArray>, ids: UIntArray, threshPk: ByteArray): Pair<ByteArray, ByteArray>` — returns (66-byte musig pubnonce, 66-byte frost aggnonce serialization).
-   - `fun frostNestedSign(secnonce: ByteArray, secshare32: ByteArray, myId: UInt, ids: UIntArray, pubshares: Array<ByteArray>?, aggnonce: ByteArray, threshPk: ByteArray, tweakCache: ByteArray, keyaggCache: ByteArray, cosignerAggnonce: ByteArray, msg32: ByteArray): ByteArray`
-   - `fun frostNestedPartialSigVerify(partialSig: ByteArray, pubnonce: ByteArray, pubshare: ByteArray, myId: UInt, ids: UIntArray, aggnonce: ByteArray, threshPk: ByteArray, tweakCache: ByteArray, keyaggCache: ByteArray, cosignerAggnonce: ByteArray, msg32: ByteArray): Int`
-   - `fun frostNestedPartialSigAgg(partialSigs: Array<ByteArray>, tweakCache: ByteArray): ByteArray` (32-byte musig partial sig).
+   - `fun prefractalNonceAgg(pubnonces: Array<ByteArray>, ids: UIntArray, threshPk: ByteArray): Pair<ByteArray, ByteArray>` — returns (66-byte musig pubnonce, 66-byte frost aggnonce serialization).
+   - `fun prefractalSign(secnonce: ByteArray, secshare32: ByteArray, myId: UInt, ids: UIntArray, pubshares: Array<ByteArray>?, aggnonce: ByteArray, threshPk: ByteArray, tweakCache: ByteArray, keyaggCache: ByteArray, cosignerAggnonce: ByteArray, msg32: ByteArray): ByteArray`
+   - `fun prefractalPartialSigVerify(partialSig: ByteArray, pubnonce: ByteArray, pubshare: ByteArray, myId: UInt, ids: UIntArray, aggnonce: ByteArray, threshPk: ByteArray, tweakCache: ByteArray, keyaggCache: ByteArray, cosignerAggnonce: ByteArray, msg32: ByteArray): Int`
+   - `fun prefractalPartialSigAgg(partialSigs: Array<ByteArray>, tweakCache: ByteArray): ByteArray` (32-byte musig partial sig).
    - No new `const val`/magic needed (decision 4). Note: the aggnonce crossing the ABI is its
      66-byte SERIALIZATION — parse/serialize with the existing
      `secp256k1_frost_aggnonce_parse/serialize` inside the glue.
@@ -337,7 +337,7 @@ with one caveat: the existing binding takes the group key as a nullable `XonlyPu
 6. `jni/src/main/kotlin/fr/acinq/secp256k1/Secp256k1Jni.kt` — overrides with `require`
    validation and `UIntArray → IntArray` mapping, forwarding through
    `Secp256k1Context.getContext()`.
-7. `tests/src/commonTest/kotlin/fr/acinq/secp256k1/FrostNestedTest.kt` — port the C
+7. `tests/src/commonTest/kotlin/fr/acinq/secp256k1/PrefractalTest.kt` — port the C
    round-trip test (2-of-3 + stock musig cosigner, tweaked and untweaked, negative cases,
    FIXED odd-Y group key fixture). This automatically runs on JVM and all native targets.
    Watch the empty/absent-argument paths on native — FEATURE-PARITY.md flags `07f7dcc`
@@ -354,15 +354,15 @@ cd experimental/bitcoin-kmp/experimental/secp256k1-kmp
 
 ---
 
-## Phase 3 — bitcoin-kmp: `FrostNested` API
+## Phase 3 — bitcoin-kmp: `Prefractal` API
 
-New file `experimental/bitcoin-kmp/src/commonMain/kotlin/fr/acinq/bitcoin/crypto/frost/FrostNested.kt`
+New file `experimental/bitcoin-kmp/src/commonMain/kotlin/fr/acinq/bitcoin/crypto/frost/Prefractal.kt`
 (same package as `Frost.kt`; deliberately separate from it because this composition is NOT BIP
 445 — see design decisions 1–2). Shape it on `crypto/iceberg/Iceberg.kt`. This object wraps the
 prefractal module's C functions via the Phase 2 bindings.
 
 ```kotlin
-object FrostNested {
+object Prefractal {
     /** Deterministic per-member nonce from a unique session label (msg omitted).
      *  Forwards groupPublicKey.xOnly() to Frost.SecretNonce.generate, whose binding takes the
      *  group key as a nullable XonlyPublicKey (Frost.kt:328) — no new binding needed. */
@@ -396,7 +396,7 @@ object FrostNested {
   x-only hand-off above costs nothing.
 - Keygen is NOT here: reuse `Frost.trustedDealerKeygen` (ChillDKG later for dealerless).
 
-New tests `experimental/bitcoin-kmp/src/commonTest/kotlin/fr/acinq/bitcoin/crypto/frost/FrostNestedTestsCommon.kt`
+New tests `experimental/bitcoin-kmp/src/commonTest/kotlin/fr/acinq/bitcoin/crypto/frost/PrefractalTestsCommon.kt`
 (there is no iceberg reference-vector set and no frosty-musig vector set, so behavioral tests):
 full nested session against a stock `Musig2` cosigner judged by
 `Crypto.verifySignatureSchnorr` on the tweaked aggregate key (mirror
@@ -406,34 +406,34 @@ re-derivation determinism (same sessionId → same nonce, fresh objects); tamper
 rejection; nonce single-use enforcement; wrong-key-order negative control. If frosty-musig
 publishes test vectors later, add a vectors runner like `FrostVectorsTestsCommon.kt`.
 
-Verification: in `experimental/bitcoin-kmp`: `./gradlew jvmTest --tests "*FrostNested*"` plus
+Verification: in `experimental/bitcoin-kmp`: `./gradlew jvmTest --tests "*Prefractal*"` plus
 the host native test target.
 
 ---
 
-## Phase 4 — lightning-kmp: `FrostSigner` + `FrostFundingSigner`
+## Phase 4 — lightning-kmp: `PrefractalSigner` + `PrefractalFundingSigner`
 
-New file `modules/core/src/commonMain/kotlin/fr/acinq/lightning/crypto/FrostSigner.kt`,
+New file `modules/core/src/commonMain/kotlin/fr/acinq/lightning/crypto/PrefractalSigner.kt`,
 mirroring `IcebergSigner.kt` section for section. No changes to `FundingSigner.kt`,
 `KeyManager.kt`, `Transactions.kt`, or `Scripts.kt` — the seam is signer-agnostic.
 
-- `data class FrostGroup(val n: Int, val t: Int, val groupPublicKey: PublicKey, val secretShares: List<PrivateKey>, val publicShares: List<PublicKey>, val tweakCache: Frost.TweakCache)`;
+- `data class PrefractalGroup(val n: Int, val t: Int, val groupPublicKey: PublicKey, val secretShares: List<PrivateKey>, val publicShares: List<PublicKey>, val tweakCache: Frost.TweakCache)`;
   `quorum = t` for both rounds. Keep shares out of logs (`toString` discipline — `PrivateKey`
   already redacts, but state it).
-- `object FrostSigner`:
-  - `keygen(n, t, seed: ByteVector32): FrostGroup` — derive the threshold secret key from the
-    seed (`Crypto.sha256("FrostSigner/keygen" || seed)`), `Frost.trustedDealerKeygen`, assert
+- `object PrefractalSigner`:
+  - `keygen(n, t, seed: ByteVector32): PrefractalGroup` — derive the threshold secret key from the
+    seed (`Crypto.sha256("PrefractalSigner/keygen" || seed)`), `Frost.trustedDealerKeygen`, assert
     `KeyMaterial.isValid()`. Same trusted-dealer caveat as iceberg's keygen: fine for tests,
     not a deployment.
   - `roundOne(group, contributors: List<Int>, sessionId): RoundOneResult(publicNonce: musig2
     IndividualNonce, groupAggregatedNonce, memberPublicNonces)` — `contributors.size >= t`
-    (NOT 2t-1), ids distinct and in range; per-member `FrostNested.generateNonce`;
-    `FrostNested.aggregateNonces`.
+    (NOT 2t-1), ids distinct and in range; per-member `Prefractal.generateNonce`;
+    `Prefractal.aggregateNonces`.
   - `roundTwo(group, signers, sessionId, roundOneResult, keyAggCache, message,
     cosignerAggregatedNonce): Either<Throwable, ChannelSpendSignature.PartialSignatureWithNonce>` —
     re-derive each signer's nonce from `(share, sessionId)` (decision 2 — nothing is stored
-    between rounds, exactly like iceberg), `FrostNested.partialSign` per signer,
-    `FrostNested.aggregatePartialSignatures`. Require `signers == contributors` AS SETS —
+    between rounds, exactly like iceberg), `Prefractal.partialSign` per signer,
+    `Prefractal.aggregatePartialSignatures`. Require `signers == contributors` AS SETS —
     NOT iceberg's `signers ⊆ contributors`: FROST's `λ_i` and the aggregate nonce are defined
     over the exact participating set, so with a proper subset the nonce terms of the missing
     contributors stay in R while their key shares are absent from Σs_i, and the resulting
@@ -442,7 +442,7 @@ mirroring `IcebergSigner.kt` section for section. No changes to `FundingSigner.k
   - `keyAggCacheFor` / `cosignerAggregatedNonce` — copy verbatim from `IcebergSigner` (they
     are scheme-independent; consider hoisting them into a shared internal helper file
     `crypto/ThresholdSignerHelpers.kt` and pointing both signers at it).
-- `class FrostFundingSigner(group, contributors = 1..t, signers = 1..t) : FundingSigner` —
+- `class PrefractalFundingSigner(group, contributors = 1..t, signers = 1..t) : FundingSigner` —
   with an `init`-time `require(signers.toSet() == contributors.toSet())` (the defaults keep
   them equal; the check catches explicit misuse — see `roundTwo` above). Otherwise copy
   `IcebergFundingSigner`'s structure: `publicKey = group.groupPublicKey`,
@@ -456,21 +456,21 @@ mirroring `IcebergSigner.kt` section for section. No changes to `FundingSigner.k
   `Scripts.Taproot.musig2Aggregate(...)`'s untweaked key (cheap, catches the same
   wrong-key-order failure class).
   - `verificationSessionId(id)`: same sha256 construction as iceberg's companion but with a
-    distinct domain tag (e.g. prepend `"FrostSigner/verification"`) so an iceberg label and a
+    distinct domain tag (e.g. prepend `"PrefractalSigner/verification"`) so an iceberg label and a
     frost label can never collide if a deployment ever mixes schemes.
   - `PublishedNonceSession` subclass carrying only the `sessionId` (round one re-derived from
     the label), with the same ONE-SESSION-ONE-SIGNATURE contract.
 
 Unit/taproot tests (all `commonTest`, mirroring the iceberg files):
 
-- `crypto/FrostSignerTestsCommon.kt` ← `IcebergSignerTestsCommon.kt`: quorum `t` (not 2t-1)
+- `crypto/PrefractalSignerTestsCommon.kt` ← `IcebergSignerTestsCommon.kt`: quorum `t` (not 2t-1)
   in both rounds; expressible configs iceberg rejects (2-of-2, 3-of-4) now work; `signers` ≠
   `contributors` is REJECTED by the require (a proper subset must fail loudly, never produce
   an invalid signature — iceberg's subset tolerance does not transfer); label reuse
   raises no error (hazard documentation); wrong key order caught; `privateKey(op)` refusal
   names the op; `verificationSessionId` collision-freeness over 1000 commit indices;
   foreign `PublishedNonceSession` refused; published-session nonce matches.
-- `crypto/FrostTaprootSessionTestsCommon.kt` ← `IcebergTaprootSessionTestsCommon.kt` (nearly
+- `crypto/PrefractalTaprootSessionTestsCommon.kt` ← `IcebergTaprootSessionTestsCommon.kt` (nearly
   verbatim): reproduce the channel session by hand (`Scripts.sort`, BIP341 tweak from spec,
   self-check tweaked key == `pubkeyScript.drop(2)`), both lexicographic key positions,
   (2-of-3, 2-of-4, 3-of-5) with at least one FIXED odd-Y group key (pins decision 3 — a
@@ -479,14 +479,14 @@ Unit/taproot tests (all `commonTest`, mirroring the iceberg files):
   `Transaction.correctlySpends`, plus the untweaked negative control. Reuse
   `FundingSignerTestHelpers.buildFundingSpend` unchanged.
 
-Verification: `./gradlew :lightning-kmp-core:jvmTest --tests "*FrostSigner*" --tests "*FrostTaprootSession*"` from the repo root.
+Verification: `./gradlew :lightning-kmp-core:jvmTest --tests "*PrefractalSigner*" --tests "*PrefractalTaprootSession*"` from the repo root.
 
 ---
 
 ## Phase 5 — channel end-to-end tests
 
 Mirror `modules/core/src/commonTest/kotlin/fr/acinq/lightning/iceberg/IcebergChannelTestsCommon.kt`
-as `modules/core/src/commonTest/kotlin/fr/acinq/lightning/frost/FrostChannelTestsCommon.kt`,
+as `modules/core/src/commonTest/kotlin/fr/acinq/lightning/prefractal/PrefractalChannelTestsCommon.kt`,
 reusing the generic harness unchanged: `TestsHelper.init`/`reachNormal` already accept
 `aliceFundingSigner`/`bobFundingSigner`, wrapped by `SignerInjectingKeyManager`.
 
@@ -494,7 +494,7 @@ Port all 12 iceberg channel tests: open with group backing (both sides), payment
 `correctlySpends` on both commitment flavors, 10 sequential payments (label advancement),
 both lexicographic key positions, {2-of-3, 3-of-5}, force-close both directions, mutual close
 as closee and as closer (exercises `publishedNonceSession`/`signWithPublishedNonce`),
-reconnect re-derivation (a FRESH `FrostFundingSigner` must re-derive the same verification
+reconnect re-derivation (a FRESH `PrefractalFundingSigner` must re-derive the same verification
 nonce — this is the test that pins down decision 2), splice refusing loudly via
 `fundingPublicKey(1)`.
 
@@ -508,7 +508,7 @@ Three deliberate adaptations:
   fixtures were never chosen for parity, and a wrong `g_frost` (decision 3) passes for even-Y
   keys and fails for odd-Y ones, so a randomly seeded or inherited fixture is a coin flip.
 
-Verification: `./gradlew :lightning-kmp-core:jvmTest --tests "*frost*"` and the host native
+Verification: `./gradlew :lightning-kmp-core:jvmTest --tests "*prefractal*"` and the host native
 test target (`:lightning-kmp-core:linuxX64Test` or macOS equivalent).
 
 ---
@@ -531,13 +531,13 @@ test target (`:lightning-kmp-core:linuxX64Test` or macOS equivalent).
    (no edits interleaved into frost or musig); bump the submodule pointer in
    secp256k1-kmp deliberately, not accidentally.
 4. **Publishing.** Consumers outside this composite build need a new secp256k1-kmp release
-   (current 0.24.0) and a bitcoin-kmp release carrying `FrostNested`; lightning-kmp's
+   (current 0.24.0) and a bitcoin-kmp release carrying `Prefractal`; lightning-kmp's
    `gradle/libs.versions.toml` pins (`secpjnijvm`, `bitcoinkmp`) must then be bumped.
-5. **Docs.** Update `FEATURE-PARITY.md` (currently iceberg-only) with the frost signer scope,
-   and add a short section to the iceberg/frost Kotlin docblocks cross-referencing the two
-   signers' different quorum rules (`t` vs `2t-1`) and different signer-set rules (frost
-   requires round-two signers == round-one contributors; iceberg tolerates a subset) so future
-   callers don't transpose them.
+5. **Docs.** Update `FEATURE-PARITY.md` (currently iceberg-only) with the prefractal signer
+   scope, and add a short section to the iceberg/prefractal Kotlin docblocks cross-referencing
+   the two signers' different quorum rules (`t` vs `2t-1`) and different signer-set rules
+   (prefractal requires round-two signers == round-one contributors; iceberg tolerates a
+   subset) so future callers don't transpose them.
 6. **Optional extensions (not in scope):** ChillDKG dealerless keygen wiring; tweak-aware
    nested aggregation (`e_musig·g_musig·tacc`) for frost-level key tweaks; identifiable-abort
    blame at the channel layer using `verifyPartialSignature`.
@@ -554,8 +554,8 @@ test target (`:lightning-kmp-core:linuxX64Test` or macOS equivalent).
   control.
 - **Round-two signer set ≠ round-one contributors.** Produces an invalid signature with no
   error at signing time (the missing contributors' nonce terms stay in R, and λ was computed
-  for the wrong set). Mitigation: set-equality `require` in `FrostSigner.roundTwo` and
-  `FrostFundingSigner.init`, plus a rejection test (Phase 4).
+  for the wrong set). Mitigation: set-equality `require` in `PrefractalSigner.roundTwo` and
+  `PrefractalFundingSigner.init`, plus a rejection test (Phase 4).
 - **JNI/native marshalling skew** (magics duplicated in three places; empty-vs-null args on
   native). Mitigation: no new magics (decision 4); port the full test matrix to both
   platforms in phase 2; keep `07f7dcc`'s lesson in view for the `msg = NULL` nonce-gen path.
