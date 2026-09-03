@@ -103,12 +103,69 @@ data class RemoteCommitmentKeys(
  *    - and tweaked with a per-commitment point
  *
  * WARNING: these private keys must never be stored on disk, in a database, or logged.
+ *
+ * @param injectedFundingSigner when set, this channel's funding key is held by something OTHER than a
+ *                              local private key -- an Iceberg threshold group, in this fork. The
+ *                              channel then takes its funding PUBLIC key and every funding-key
+ *                              SIGNATURE from that object, and [fundingKey] stops being answerable.
+ *                              Defaults to null, which is byte-for-byte the pre-existing behaviour.
  */
 data class ChannelKeys(
     private val fundingMasterKey: DeterministicWallet.ExtendedPrivateKey,
-    private val commitmentMasterKey: DeterministicWallet.ExtendedPrivateKey
+    private val commitmentMasterKey: DeterministicWallet.ExtendedPrivateKey,
+    private val injectedFundingSigner: FundingSigner? = null
 ) {
-    fun fundingKey(fundingTxIndex: Long): PrivateKey = fundingMasterKey.derivePrivateKey(hardened(fundingTxIndex)).privateKey
+    /**
+     * The raw funding private key.
+     *
+     * POISON PILL. This throws outright when the channel's funding key is held by a [FundingSigner]
+     * instead, because there is then no such private key and any answer would be the WRONG key -- one
+     * whose public key is not in the channel's funding output. Silently returning a locally-derived
+     * key is exactly the failure this refactor exists to remove: it produces valid-looking signatures
+     * that cannot aggregate, surfacing much later as an unexplained invalid signature.
+     *
+     * Callers that only need the public key want [fundingPublicKey]; callers that need to sign want
+     * [fundingSigner]. What is left here is genuinely private-key-only work -- ECDSA signing on
+     * segwit-v0 channels and splicing -- none of which is in scope for a threshold-backed channel, so
+     * throwing is the correct behaviour rather than a limitation to work around.
+     */
+    fun fundingKey(fundingTxIndex: Long): PrivateKey {
+        require(injectedFundingSigner == null) { "fundingKey($fundingTxIndex) was called on a channel whose funding key is held by a ${injectedFundingSigner!!::class.simpleName}: this code path has not been routed through ChannelKeys.fundingSigner and would sign with the wrong key" }
+        return fundingMasterKey.derivePrivateKey(hardened(fundingTxIndex)).privateKey
+    }
+
+    /** The funding public key that goes into the channel's 2-of-2 funding output. Always available. */
+    fun fundingPublicKey(fundingTxIndex: Long): PublicKey = when (val signer = injectedFundingSigner) {
+        null -> fundingKey(fundingTxIndex).publicKey()
+        else -> {
+            requireIndexZero(fundingTxIndex, "fundingPublicKey")
+            signer.publicKey
+        }
+    }
+
+    /**
+     * These same keys, but with the funding key held by [signer] instead of derived locally. The
+     * commitment/revocation/HTLC keys are untouched -- only the funding key moves.
+     */
+    fun withFundingSigner(signer: FundingSigner): ChannelKeys = copy(injectedFundingSigner = signer)
+
+    /** Everything the channel needs to SIGN with its funding key, private or not. */
+    fun fundingSigner(fundingTxIndex: Long): FundingSigner = when (val signer = injectedFundingSigner) {
+        null -> FundingSigner.PrivateKeyFundingSigner(fundingKey(fundingTxIndex))
+        else -> {
+            requireIndexZero(fundingTxIndex, "fundingSigner")
+            signer
+        }
+    }
+
+    /**
+     * An injected [FundingSigner] carries one key, so it can only stand in for the channel's ORIGINAL
+     * funding transaction. A splice derives a fresh funding key at the next index, which this fork
+     * does not implement for threshold signers -- fail loudly rather than reuse index 0's key at
+     * index 1, which would silently produce a funding output nobody can spend.
+     */
+    private fun requireIndexZero(fundingTxIndex: Long, operation: String) =
+        require(fundingTxIndex == 0L) { "$operation($fundingTxIndex): a channel backed by an injected FundingSigner only has a funding key at index 0 (splicing is not supported for threshold signers)" }
 
     val revocationBaseSecret: PrivateKey = commitmentMasterKey.derivePrivateKey(hardened(1)).privateKey
     val revocationBasePoint: PublicKey = revocationBaseSecret.publicKey()

@@ -177,6 +177,13 @@ world you are in.
 
 ## Phase 1 — The seam: `FundingSigner` + `ChannelKeys` — ~0.5 day
 
+**Status: done.** Copied verbatim from the reference at `592f3844`; the diffstat matched its
+`623179f4` exactly (KeyManager +61, Transactions +5), confirming the shared-base claim in practice
+rather than only by hashing. `FundingSigner.kt` was taken at HEAD state, so design A's
+`PublishedNonceSession` is already in place and `78b7718e` never needs replaying. Full jvmTest suite
+green at **918** (911 baseline + the 7 phase-0 probes), and `compileKotlinLinuxX64` green — the new
+commonMain code is target-agnostic, which is what phase 3 will depend on.
+
 Port the reference's `623179f4`, **at its HEAD state** — that is, with `78b7718e`
 ("Generalize the closee-nonce session into a published-nonce session") already folded in. Taking
 `78b7718e` as a separate later commit, as the reference's history does, means writing

@@ -235,6 +235,11 @@ object Transactions {
             return ChannelSpendSignature.IndividualSignature(sig)
         }
 
+        /** The BIP341 key-path sighash that musig2 partial signatures of this funding-output spend commit to. */
+        fun taprootSighash(extraUtxos: Map<OutPoint, TxOut>): ByteVector32 {
+            return tx.hashForSigningTaprootKeyPath(inputIndex, buildSpentOutputs(extraUtxos), SigHash.SIGHASH_DEFAULT)
+        }
+
         /** Create a partial transaction for the channel's musig2 funding output when using [CommitmentFormat.SimpleTaprootChannels]. */
         fun partialSign(
             localFundingKey: PrivateKey,
