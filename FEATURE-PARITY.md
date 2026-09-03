@@ -270,6 +270,25 @@ and only `InteractiveTxSigningSession` is serialized.
 
 ## Phase 3 — The Iceberg signer (the only genuinely new code) — ~1–2 days
 
+**Status: done.** `IcebergSigner`/`IcebergFundingSigner` are in `commonMain`, and
+`IcebergFundingSigner` is present in the compiled **linuxX64 klib** — the reference's JVM-only
+ceiling is lifted in fact, not just in principle. `IcebergTaprootSessionTestsCommon` (3 tests) and
+`IcebergSignerTestsCommon` (11) are green, full suite at 925.
+
+Two things learned while writing it, neither visible from the reference:
+
+- **`keyAggregationCheck` validates the key set and order, but NOT the tweak.** It passes on tweaked
+  and untweaked caches alike (pinned by a test). So it does catch a wrong key order — which the
+  reference could not — but the missing-tweak bug, the one that "made every previous attempt fail",
+  is still only caught by the session test's negative control. The check is a useful narrowing, not
+  a replacement.
+- **Round-two signers are constrained to a subset of the round-one contributors.** The reference's
+  `roundTwo` documents that an absent member can still sign; nothing in bitcoin-kmp's own suite
+  exercises that, so this port asserts the subset property in `IcebergFundingSigner`'s `init` rather
+  than inheriting an untested claim. The defaults already satisfied it.
+
+The phase-0 scratch test was deleted and its four invariants folded into `IcebergSignerTestsCommon`.
+
 Rewrite `IcebergSigner.kt` (272 lines) against the typed API, **into `commonMain`**:
 
 `modules/core/src/commonMain/kotlin/fr/acinq/lightning/crypto/IcebergSigner.kt`
