@@ -178,7 +178,7 @@ dokka {
     }
 }
 
-val javadocJar = tasks.create<Jar>("javadocJar") {
+val javadocJar = tasks.register<Jar>("javadocJar") {
     archiveClassifier.set("javadoc")
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
     dependsOn("dokkaGenerate")
@@ -276,12 +276,12 @@ afterEvaluate {
 }
 
 /** Electrum integration test environment + tasks configuration */
-val dockerTestEnv by tasks.creating(Exec::class) {
+val dockerTestEnv by tasks.registering(Exec::class) {
     workingDir = rootDir.resolve("testing")
     commandLine("bash", "env.sh", "remove", "net-create", "btc-create", "elx-create", "btc-start", "elx-start")
 }
 
-val dockerCleanup by tasks.creating(Exec::class) {
+val dockerCleanup by tasks.registering(Exec::class) {
     workingDir = rootDir.resolve("testing")
     commandLine("bash", "env.sh", "elx-stop", "btc-stop", "remove")
 }
