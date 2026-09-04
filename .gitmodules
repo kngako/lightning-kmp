@@ -1,3 +1,4 @@
 [submodule "experimental/bitcoin-kmp"]
 	path = experimental/bitcoin-kmp
 	url = https://github.com/kngako/bitcoin-kmp.git
+	branch = threshold
