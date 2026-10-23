@@ -279,7 +279,7 @@ object Helpers {
         }
 
         /** We are the closer: we sign closing transactions for which we pay the fees. */
-        fun makeClosingTxs(
+        suspend fun makeClosingTxs(
             channelKeys: ChannelKeys,
             commitment: FullCommitment,
             localScriptPubkey: ByteVector,
@@ -329,7 +329,7 @@ object Helpers {
                         // If we cannot create our partial signature for one of our closing txs, we just skip it.
                         // It will only happen if our peer sent an invalid nonce, in which case we cannot do anything anyway
                         // apart from eventually force-closing.
-                        fun localSig(tx: Transactions.ClosingTx): ChannelSpendSignature.PartialSignatureWithNonce? {
+                        suspend fun localSig(tx: Transactions.ClosingTx): ChannelSpendSignature.PartialSignatureWithNonce? {
                             return fundingSigner.signWithFreshNonce(tx, commitment.remoteFundingPubkey, mapOf(), commitment.fundingTxId, remoteNonce).right
                         }
 
@@ -353,7 +353,7 @@ object Helpers {
          * Callers should ignore failures: since the protocol is fully asynchronous, failures here simply mean that they
          * are not using our latest script (race condition between our closing_complete and theirs).
          */
-        fun signClosingTx(
+        suspend fun signClosingTx(
             channelKeys: ChannelKeys,
             commitment: FullCommitment,
             localScriptPubkey: ByteVector,

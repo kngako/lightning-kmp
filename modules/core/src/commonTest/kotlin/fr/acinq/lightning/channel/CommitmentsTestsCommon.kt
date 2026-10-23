@@ -27,6 +27,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
+import fr.acinq.lightning.tests.utils.runSuspendTest
 
 class CommitmentsTestsCommon : LightningTestSuite(), LoggingContext {
 
@@ -38,7 +39,7 @@ class CommitmentsTestsCommon : LightningTestSuite(), LoggingContext {
     }
 
     @Test
-    fun `correct values for availableForSend - availableForReceive -- success case`() {
+    fun `correct values for availableForSend - availableForReceive -- success case`() = runSuspendTest {
         val (alice, bob) = reachNormal(aliceFundingAmount = 800_000.sat, bobFundingAmount = 200_000.sat)
 
         val a = 798_676_128.msat // initial balance alice
@@ -124,7 +125,7 @@ class CommitmentsTestsCommon : LightningTestSuite(), LoggingContext {
     }
 
     @Test
-    fun `correct values for availableForSend - availableForReceive -- failure case`() {
+    fun `correct values for availableForSend - availableForReceive -- failure case`() = runSuspendTest {
         val (alice, bob) = reachNormal(aliceFundingAmount = 800_000.sat, bobFundingAmount = 200_000.sat)
 
         val a = 798_676_128.msat // initial balance alice
@@ -210,7 +211,7 @@ class CommitmentsTestsCommon : LightningTestSuite(), LoggingContext {
     }
 
     @Test
-    fun `correct values for availableForSend - availableForReceive -- multiple htlcs`() {
+    fun `correct values for availableForSend - availableForReceive -- multiple htlcs`() = runSuspendTest {
         val (alice, bob) = reachNormal(aliceFundingAmount = 800_000.sat, bobFundingAmount = 200_000.sat)
 
         val a = 798_676_128.msat // initial balance alice

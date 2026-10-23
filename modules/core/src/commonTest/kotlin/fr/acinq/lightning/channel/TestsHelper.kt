@@ -109,7 +109,8 @@ data class LNChannel<out S : ChannelState>(
         }
     }
 
-    fun signCommitTx(): Transaction = commitments.latest.fullySignedCommitTx(channelKeys)
+    // Blocks rather than suspends: eighty tests call this, and the signer behind it only suspends for a remote group.
+    fun signCommitTx(): Transaction = runBlocking { commitments.latest.fullySignedCommitTx(channelKeys) }
 
     fun unsignedHtlcTxs(): List<Transactions.HtlcTx> = commitments.latest.unsignedHtlcTxs(channelKeys).map { it.first }
 

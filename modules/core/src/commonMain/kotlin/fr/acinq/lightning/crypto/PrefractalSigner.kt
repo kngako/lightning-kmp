@@ -269,7 +269,7 @@ class PrefractalFundingSigner(
     override fun verificationNonce(id: FundingSigner.VerificationNonceId): IndividualNonce =
         PrefractalSigner.roundOne(group, contributors, verificationSessionId(id)).publicNonce
 
-    override fun signWithVerificationNonce(
+    override suspend fun signWithVerificationNonce(
         tx: Transactions.ChannelSpendTransaction,
         remoteFundingPubKey: PublicKey,
         extraUtxos: Map<OutPoint, TxOut>,
@@ -278,7 +278,7 @@ class PrefractalFundingSigner(
     ): Either<Throwable, ChannelSpendSignature.PartialSignatureWithNonce> =
         sign(tx, remoteFundingPubKey, extraUtxos, verificationSessionId(id), remoteNonce)
 
-    override fun signWithFreshNonce(
+    override suspend fun signWithFreshNonce(
         tx: Transactions.ChannelSpendTransaction,
         remoteFundingPubKey: PublicKey,
         extraUtxos: Map<OutPoint, TxOut>,
@@ -292,7 +292,7 @@ class PrefractalFundingSigner(
         return PrefractalPublishedNonceSession(sessionId, PrefractalSigner.roundOne(group, contributors, sessionId).publicNonce)
     }
 
-    override fun signWithPublishedNonce(
+    override suspend fun signWithPublishedNonce(
         tx: Transactions.ChannelSpendTransaction,
         remoteFundingPubKey: PublicKey,
         extraUtxos: Map<OutPoint, TxOut>,

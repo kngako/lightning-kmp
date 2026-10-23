@@ -16,6 +16,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import fr.acinq.lightning.tests.utils.runSuspendTest
 
 /**
  * The properties [IcebergSigner] and [IcebergFundingSigner] rest on, stated as assertions rather
@@ -157,7 +158,7 @@ class IcebergSignerTestsCommon : LightningTestSuite() {
     }
 
     @Test
-    fun `a published nonce session from another signer is refused`() {
+    fun `a published nonce session from another signer is refused`() = runSuspendTest {
         val group = IcebergSigner.keygen(4, 2, randomBytes32())
         val signer = IcebergFundingSigner(group)
         val other = FundingSigner.PrivateKeyFundingSigner(randomKey())
@@ -171,7 +172,7 @@ class IcebergSignerTestsCommon : LightningTestSuite() {
     }
 
     @Test
-    fun `a published nonce session publishes the nonce it will later sign under`() {
+    fun `a published nonce session publishes the nonce it will later sign under`() = runSuspendTest {
         val group = IcebergSigner.keygen(4, 2, randomBytes32())
         val signer = IcebergFundingSigner(group)
         val cosignerPriv = randomKey()

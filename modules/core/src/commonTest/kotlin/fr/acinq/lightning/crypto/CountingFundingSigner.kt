@@ -58,20 +58,26 @@ open class CountingFundingSigner(private val underlying: FundingSigner) : Fundin
         return call()
     }
 
+    /** [record], for the signing methods, which suspend while a remote group answers round two. */
+    protected open suspend fun <A> recordSigning(counter: CallCounter, call: suspend () -> A): A {
+        counter.increment()
+        return call()
+    }
+
     override fun verificationNonce(id: FundingSigner.VerificationNonceId): IndividualNonce =
         record(nonceCalls) { underlying.verificationNonce(id) }
 
-    override fun signWithVerificationNonce(tx: Transactions.ChannelSpendTransaction, remoteFundingPubKey: PublicKey, extraUtxos: Map<OutPoint, TxOut>, id: FundingSigner.VerificationNonceId, remoteNonce: IndividualNonce): Either<Throwable, ChannelSpendSignature.PartialSignatureWithNonce> =
-        record(signVerificationCalls) { underlying.signWithVerificationNonce(tx, remoteFundingPubKey, extraUtxos, id, remoteNonce) }
+    override suspend fun signWithVerificationNonce(tx: Transactions.ChannelSpendTransaction, remoteFundingPubKey: PublicKey, extraUtxos: Map<OutPoint, TxOut>, id: FundingSigner.VerificationNonceId, remoteNonce: IndividualNonce): Either<Throwable, ChannelSpendSignature.PartialSignatureWithNonce> =
+        recordSigning(signVerificationCalls) { underlying.signWithVerificationNonce(tx, remoteFundingPubKey, extraUtxos, id, remoteNonce) }
 
-    override fun signWithFreshNonce(tx: Transactions.ChannelSpendTransaction, remoteFundingPubKey: PublicKey, extraUtxos: Map<OutPoint, TxOut>, fundingTxId: TxId, remoteNonce: IndividualNonce): Either<Throwable, ChannelSpendSignature.PartialSignatureWithNonce> =
-        record(signFreshCalls) { underlying.signWithFreshNonce(tx, remoteFundingPubKey, extraUtxos, fundingTxId, remoteNonce) }
+    override suspend fun signWithFreshNonce(tx: Transactions.ChannelSpendTransaction, remoteFundingPubKey: PublicKey, extraUtxos: Map<OutPoint, TxOut>, fundingTxId: TxId, remoteNonce: IndividualNonce): Either<Throwable, ChannelSpendSignature.PartialSignatureWithNonce> =
+        recordSigning(signFreshCalls) { underlying.signWithFreshNonce(tx, remoteFundingPubKey, extraUtxos, fundingTxId, remoteNonce) }
 
     override fun publishedNonceSession(fundingTxId: TxId, remoteFundingPubKey: PublicKey): FundingSigner.PublishedNonceSession =
         record(publishedNonceCalls) { underlying.publishedNonceSession(fundingTxId, remoteFundingPubKey) }
 
-    override fun signWithPublishedNonce(tx: Transactions.ChannelSpendTransaction, remoteFundingPubKey: PublicKey, extraUtxos: Map<OutPoint, TxOut>, session: FundingSigner.PublishedNonceSession, remoteNonce: IndividualNonce): Either<Throwable, ChannelSpendSignature.PartialSignatureWithNonce> =
-        record(signPublishedCalls) { underlying.signWithPublishedNonce(tx, remoteFundingPubKey, extraUtxos, session, remoteNonce) }
+    override suspend fun signWithPublishedNonce(tx: Transactions.ChannelSpendTransaction, remoteFundingPubKey: PublicKey, extraUtxos: Map<OutPoint, TxOut>, session: FundingSigner.PublishedNonceSession, remoteNonce: IndividualNonce): Either<Throwable, ChannelSpendSignature.PartialSignatureWithNonce> =
+        recordSigning(signPublishedCalls) { underlying.signWithPublishedNonce(tx, remoteFundingPubKey, extraUtxos, session, remoteNonce) }
 
     /** Every method enters round one. */
     val roundOneCalls: Long get() = nonceCalls.value + signVerificationCalls.value + signFreshCalls.value + publishedNonceCalls.value + signPublishedCalls.value

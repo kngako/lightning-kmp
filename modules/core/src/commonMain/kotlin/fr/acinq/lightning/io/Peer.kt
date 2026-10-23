@@ -496,7 +496,7 @@ class Peer(
                                 val sigs = (0 until msg.batchSize).mapNotNull { receiveMessage() as CommitSig }
                                 input.send(MessageReceived(peerConnection.id, CommitSigs.fromSigs(sigs)))
                             }
-                            is LightningMessage -> input.send(MessageReceived(peerConnection.id, msg))
+                            is LightningMessage -> send(MessageReceived(peerConnection.id, msg))
                             else -> {}
                         }
                     }
@@ -583,7 +583,23 @@ class Peer(
     }
 
     suspend fun send(cmd: PeerCommand) {
+        if (cmd is MessageReceived && cmd.msg is Ping && answerPing(cmd.connectionId, cmd.msg)) return
         input.send(cmd)
+    }
+
+    /**
+     * Answers a ping without queueing it behind the channels. A channel whose funding key is held by a
+     * remote threshold group suspends inside [processEvent] while the group's devices answer, which can
+     * take far longer than a peer waits for a pong; keep-alive must not depend on the channel loop
+     * being free. Returns false, leaving the ping to [processEvent], when it arrives on a connection
+     * that loop has not adopted yet.
+     */
+    private fun answerPing(connectionId: Long, ping: Ping): Boolean {
+        val connection = peerConnection ?: return false
+        if (connection.id != connectionId) return false
+        // BOLT1: reply only if requested pong length is acceptable, otherwise silently ignore
+        if (ping.pongLength <= 65532) connection.send(Pong(ByteVector(ByteArray(ping.pongLength))))
+        return true
     }
 
     /**

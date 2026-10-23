@@ -418,7 +418,7 @@ data class Syncing(val state: PersistedChannelState, val channelReestablishSent:
         /**
          * Check whether we are in sync with our peer.
          */
-        fun ChannelContext.handleSync(commitments: Commitments, remoteChannelReestablish: ChannelReestablish): SyncResult {
+        suspend fun ChannelContext.handleSync(commitments: Commitments, remoteChannelReestablish: ChannelReestablish): SyncResult {
             val channelKeys = keyManager.channelKeys(commitments.channelParams.localParams.fundingKeyPath)
             // This is done in two steps:
             // - step 1: we check our local commitment
@@ -426,7 +426,7 @@ data class Syncing(val state: PersistedChannelState, val channelReestablishSent:
             // step 2 depends on step 1 because we need to preserve ordering between commit_sig and revocation
 
             // step 2: we check the remote commitment
-            fun checkRemoteCommit(remoteChannelReestablish: ChannelReestablish, retransmitRevocation: RevokeAndAck?): SyncResult {
+            suspend fun checkRemoteCommit(remoteChannelReestablish: ChannelReestablish, retransmitRevocation: RevokeAndAck?): SyncResult {
                 return when (val rnci = commitments.remoteNextCommitInfo) {
                     is Either.Left -> {
                         when {

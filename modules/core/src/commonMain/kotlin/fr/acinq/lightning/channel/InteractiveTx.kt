@@ -43,7 +43,7 @@ data class SharedFundingInput(
     /** Our funding pubkey for the *previous* channel output that we're spending with this splice. */
     fun previousFundingPubkey(channelKeys: ChannelKeys): PublicKey = channelKeys.fundingPublicKey(fundingTxIndex)
 
-    fun sign(session: InteractiveTxSession, tx: Transaction, spentUtxos: Map<OutPoint, TxOut>): Either<ChannelException, ChannelSpendSignature> {
+    suspend fun sign(session: InteractiveTxSession, tx: Transaction, spentUtxos: Map<OutPoint, TxOut>): Either<ChannelException, ChannelSpendSignature> {
         // The signer for the PREVIOUS funding output -- the one this shared input spends -- which is
         // not the same index as the session's own signer for the new funding output.
         val previousFundingSigner = session.channelKeys.fundingSigner(fundingTxIndex)
@@ -493,7 +493,7 @@ data class SharedTransaction(
         return Transaction(2, inputs, outputs, lockTime)
     }
 
-    fun sign(session: InteractiveTxSession, keyManager: KeyManager, fundingParams: InteractiveTxParams, remoteNodeId: PublicKey): Either<ChannelException, PartiallySignedSharedTransaction> {
+    suspend fun sign(session: InteractiveTxSession, keyManager: KeyManager, fundingParams: InteractiveTxParams, remoteNodeId: PublicKey): Either<ChannelException, PartiallySignedSharedTransaction> {
         val unsignedTx = buildUnsignedTx()
         val sharedSig = when (val sig = fundingParams.sharedInput?.sign(session, unsignedTx, spentOutputs)) {
             is Either.Left -> return Either.Left(sig.value)
@@ -1222,7 +1222,7 @@ data class InteractiveTxSigningSession(
         /** A local commitment for which we haven't received our peer's signatures. */
         data class UnsignedLocalCommit(val index: Long, val spec: CommitmentSpec, val txId: TxId)
 
-        fun create(
+        suspend fun create(
             session: InteractiveTxSession,
             keyManager: KeyManager,
             channelParams: ChannelParams,

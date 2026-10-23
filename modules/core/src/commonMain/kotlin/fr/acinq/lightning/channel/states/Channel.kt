@@ -453,7 +453,7 @@ sealed class ChannelStateWithCommitments : PersistedChannelState() {
         return commitments.all.filter { it.fundingTxIndex > 0 && it.fundingTxIndex > lastLockedBefore && it.fundingTxIndex <= lastLockedAfter }
     }
 
-    internal fun ChannelContext.startClosingNegotiation(
+    internal suspend fun ChannelContext.startClosingNegotiation(
         cmd: ChannelCommand.Close.MutualClose?,
         commitments: Commitments,
         localShutdown: Shutdown,

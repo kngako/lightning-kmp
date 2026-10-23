@@ -16,6 +16,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import fr.acinq.lightning.tests.utils.runSuspendTest
 
 /**
  * The seam's regression proof: [FundingSigner.PrivateKeyFundingSigner] must be byte-for-byte the
@@ -39,7 +40,7 @@ class FundingSignerTestsCommon : LightningTestSuite() {
     }
 
     @Test
-    fun `private-key signer partial signatures verify against the counterparty session`() {
+    fun `private-key signer partial signatures verify against the counterparty session`() = runSuspendTest {
         val (spendTx, _) = FundingSignerTestHelpers.buildFundingSpend(fundingKey.publicKey(), remoteFundingKey)
         val fundingTxId = spendTx.input.outPoint.txid
         val remoteNonce = NonceGenerator.signingNonce(remoteFundingKey, fundingKey.publicKey(), fundingTxId)
@@ -60,7 +61,7 @@ class FundingSignerTestsCommon : LightningTestSuite() {
     }
 
     @Test
-    fun `private-key published nonce session signs the transaction it was published for`() {
+    fun `private-key published nonce session signs the transaction it was published for`() = runSuspendTest {
         val (spendTx, _) = FundingSignerTestHelpers.buildFundingSpend(fundingKey.publicKey(), remoteFundingKey)
         val fundingTxId = spendTx.input.outPoint.txid
         val remoteNonce = NonceGenerator.signingNonce(remoteFundingKey, fundingKey.publicKey(), fundingTxId)
@@ -85,10 +86,10 @@ class FundingSignerTestsCommon : LightningTestSuite() {
             override val publicKey = randomKey().publicKey()
             override val privateKeyOrNull: PrivateKey? = null
             override fun verificationNonce(id: FundingSigner.VerificationNonceId): IndividualNonce = TODO()
-            override fun signWithVerificationNonce(tx: Transactions.ChannelSpendTransaction, remoteFundingPubKey: PublicKey, extraUtxos: Map<OutPoint, TxOut>, id: FundingSigner.VerificationNonceId, remoteNonce: IndividualNonce) = TODO()
-            override fun signWithFreshNonce(tx: Transactions.ChannelSpendTransaction, remoteFundingPubKey: PublicKey, extraUtxos: Map<OutPoint, TxOut>, fundingTxId: TxId, remoteNonce: IndividualNonce) = TODO()
+            override suspend fun signWithVerificationNonce(tx: Transactions.ChannelSpendTransaction, remoteFundingPubKey: PublicKey, extraUtxos: Map<OutPoint, TxOut>, id: FundingSigner.VerificationNonceId, remoteNonce: IndividualNonce) = TODO()
+            override suspend fun signWithFreshNonce(tx: Transactions.ChannelSpendTransaction, remoteFundingPubKey: PublicKey, extraUtxos: Map<OutPoint, TxOut>, fundingTxId: TxId, remoteNonce: IndividualNonce) = TODO()
             override fun publishedNonceSession(fundingTxId: TxId, remoteFundingPubKey: PublicKey): FundingSigner.PublishedNonceSession = TODO()
-            override fun signWithPublishedNonce(tx: Transactions.ChannelSpendTransaction, remoteFundingPubKey: PublicKey, extraUtxos: Map<OutPoint, TxOut>, session: FundingSigner.PublishedNonceSession, remoteNonce: IndividualNonce) = TODO()
+            override suspend fun signWithPublishedNonce(tx: Transactions.ChannelSpendTransaction, remoteFundingPubKey: PublicKey, extraUtxos: Map<OutPoint, TxOut>, session: FundingSigner.PublishedNonceSession, remoteNonce: IndividualNonce) = TODO()
         }
         val thresholdChannelKeys = TestConstants.Alice.keyManager.channelKeys(KeyPath.empty).withFundingSigner(thresholdSigner)
 

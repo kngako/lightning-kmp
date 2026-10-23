@@ -16,6 +16,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import fr.acinq.lightning.tests.utils.runSuspendTest
 
 /**
  * The properties [PrefractalSigner] and [PrefractalFundingSigner] rest on, stated as assertions
@@ -28,7 +29,7 @@ import kotlin.test.assertTrue
  */
 class PrefractalSignerTestsCommon : LightningTestSuite() {
 
-    private fun signAgainstCosigner(
+    private suspend fun signAgainstCosigner(
         group: PrefractalGroup,
         signer: PrefractalFundingSigner,
         cosignerPriv: fr.acinq.bitcoin.PrivateKey = randomKey()
@@ -51,7 +52,7 @@ class PrefractalSignerTestsCommon : LightningTestSuite() {
     }
 
     @Test
-    fun `configurations iceberg cannot express work here`() {
+    fun `configurations iceberg cannot express work here`() = runSuspendTest {
         // Iceberg requires t <= (n+1)/2, so 2-of-2 and 3-of-4 are inexpressible there.
         for ((t, n) in listOf(2 to 2, 3 to 4, 4 to 4)) {
             val group = PrefractalSigner.keygen(n, t, randomBytes32())
@@ -187,7 +188,7 @@ class PrefractalSignerTestsCommon : LightningTestSuite() {
     }
 
     @Test
-    fun `a wrong key order is caught before a useless signature is produced`() {
+    fun `a wrong key order is caught before a useless signature is produced`() = runSuspendTest {
         val group = PrefractalSigner.keygen(4, 2, randomBytes32())
         val signer = PrefractalFundingSigner(group)
         // The signer builds its own cache from Scripts.sort, so the guard inside sign() is what
@@ -233,7 +234,7 @@ class PrefractalSignerTestsCommon : LightningTestSuite() {
     }
 
     @Test
-    fun `a published nonce session from another signer is refused`() {
+    fun `a published nonce session from another signer is refused`() = runSuspendTest {
         val group = PrefractalSigner.keygen(4, 2, randomBytes32())
         val signer = PrefractalFundingSigner(group)
         val other = FundingSigner.PrivateKeyFundingSigner(randomKey())
@@ -247,7 +248,7 @@ class PrefractalSignerTestsCommon : LightningTestSuite() {
     }
 
     @Test
-    fun `a published nonce session publishes the nonce it will later sign under`() {
+    fun `a published nonce session publishes the nonce it will later sign under`() = runSuspendTest {
         val group = PrefractalSigner.keygen(4, 2, randomBytes32())
         val signer = PrefractalFundingSigner(group)
         val cosignerPriv = randomKey()

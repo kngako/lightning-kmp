@@ -211,7 +211,7 @@ class IcebergFundingSigner(
     override fun verificationNonce(id: FundingSigner.VerificationNonceId): IndividualNonce =
         IcebergSigner.roundOne(group, contributors, verificationSessionId(id)).publicNonce
 
-    override fun signWithVerificationNonce(
+    override suspend fun signWithVerificationNonce(
         tx: Transactions.ChannelSpendTransaction,
         remoteFundingPubKey: PublicKey,
         extraUtxos: Map<OutPoint, TxOut>,
@@ -220,7 +220,7 @@ class IcebergFundingSigner(
     ): Either<Throwable, ChannelSpendSignature.PartialSignatureWithNonce> =
         sign(tx, remoteFundingPubKey, extraUtxos, verificationSessionId(id), remoteNonce)
 
-    override fun signWithFreshNonce(
+    override suspend fun signWithFreshNonce(
         tx: Transactions.ChannelSpendTransaction,
         remoteFundingPubKey: PublicKey,
         extraUtxos: Map<OutPoint, TxOut>,
@@ -234,7 +234,7 @@ class IcebergFundingSigner(
         return IcebergPublishedNonceSession(sessionId, IcebergSigner.roundOne(group, contributors, sessionId).publicNonce)
     }
 
-    override fun signWithPublishedNonce(
+    override suspend fun signWithPublishedNonce(
         tx: Transactions.ChannelSpendTransaction,
         remoteFundingPubKey: PublicKey,
         extraUtxos: Map<OutPoint, TxOut>,

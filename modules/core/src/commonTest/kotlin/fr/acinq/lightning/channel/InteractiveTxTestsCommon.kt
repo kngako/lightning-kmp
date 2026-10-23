@@ -19,11 +19,12 @@ import fr.acinq.lightning.utils.msat
 import fr.acinq.lightning.utils.sat
 import fr.acinq.lightning.wire.*
 import kotlin.test.*
+import fr.acinq.lightning.tests.utils.runSuspendTest
 
 class InteractiveTxTestsCommon : LightningTestSuite() {
 
     @Test
-    fun `initiator funds more than non-initiator`() {
+    fun `initiator funds more than non-initiator`() = runSuspendTest {
         val targetFeerate = FeeratePerKw(5000.sat)
         val fundingA = 120_000.sat
         val utxosA = listOf(50_000.sat, 35_000.sat, 60_000.sat)
@@ -115,7 +116,7 @@ class InteractiveTxTestsCommon : LightningTestSuite() {
 
 
     @Test
-    fun `Alice detects invalid signatures from Bob`() {
+    fun `Alice detects invalid signatures from Bob`() = runSuspendTest {
         val targetFeerate = FeeratePerKw(5000.sat)
         val fundingA = 120_000.sat
         val utxosA = listOf(50_000.sat, 35_000.sat, 60_000.sat)
@@ -135,7 +136,7 @@ class InteractiveTxTestsCommon : LightningTestSuite() {
 
         // we need to re-create new interactive tx sessions for each test, because they include secret musig2 nonces that can only be used once.
         // re-using the same sessions would seem to work (signing the shared tx would fail) but for the wrong reasons (secret nonce already used instead of invalid signatures)
-        fun setup(): Setup {
+        suspend fun setup(): Setup {
             // 3 swap-in inputs, 2 legacy swap-in inputs, and 2 outputs from Alice
             // 2 swap-in inputs, 2 legacy swap-in inputs, and 1 output from Bob
 
@@ -258,7 +259,7 @@ class InteractiveTxTestsCommon : LightningTestSuite() {
     }
 
     @Test
-    fun `initiator funds less than non-initiator`() {
+    fun `initiator funds less than non-initiator`() = runSuspendTest {
         val targetFeerate = FeeratePerKw(3000.sat)
         val fundingA = 10_000.sat
         val utxosA = listOf(50_000.sat)
@@ -329,7 +330,7 @@ class InteractiveTxTestsCommon : LightningTestSuite() {
     }
 
     @Test
-    fun `initiator funds more than non-initiator but contributes less`() {
+    fun `initiator funds more than non-initiator but contributes less`() = runSuspendTest {
         val targetFeerate = FeeratePerKw(5000.sat)
         val fundingA = 100_000.sat
         val utxosA = listOf(150_000.sat)
@@ -389,7 +390,7 @@ class InteractiveTxTestsCommon : LightningTestSuite() {
     }
 
     @Test
-    fun `non-initiator does not contribute`() {
+    fun `non-initiator does not contribute`() = runSuspendTest {
         val targetFeerate = FeeratePerKw(2500.sat)
         val fundingA = 150_000.sat
         val utxosA = listOf(80_000.sat, 120_000.sat)
@@ -461,7 +462,7 @@ class InteractiveTxTestsCommon : LightningTestSuite() {
     }
 
     @Test
-    fun `initiator does not contribute -- on-the-fly funding`() {
+    fun `initiator does not contribute -- on-the-fly funding`() = runSuspendTest {
         // When on-the-fly funding is used, the initiator may not contribute to the funding transaction.
         // It will receive HTLCs later that use the purchased inbound liquidity, and liquidity fees will be deduced from those HTLCs.
         val targetFeerate = FeeratePerKw(5000.sat)
@@ -504,7 +505,7 @@ class InteractiveTxTestsCommon : LightningTestSuite() {
     }
 
     @Test
-    fun `initiator and non-initiator splice-in`() {
+    fun `initiator and non-initiator splice-in`() = runSuspendTest {
         val targetFeerate = FeeratePerKw(1000.sat)
         val balanceA = 99_999_400.msat
         val additionalFundingA = 30_000.sat
@@ -581,7 +582,7 @@ class InteractiveTxTestsCommon : LightningTestSuite() {
     }
 
     @Test
-    fun `initiator and non-initiator splice-out -- single`() {
+    fun `initiator and non-initiator splice-out -- single`() = runSuspendTest {
         // Alice and Bob decide to splice funds out of the channel, and deduce on-chain fees from their new channel contribution.
         val balanceA = 99_999_700.msat
         val spliceOutputsA = listOf(TxOut(50_000.sat, Script.pay2wpkh(randomKey().publicKey())))
@@ -654,7 +655,7 @@ class InteractiveTxTestsCommon : LightningTestSuite() {
     }
 
     @Test
-    fun `initiator and non-initiator splice-out -- multiple`() {
+    fun `initiator and non-initiator splice-out -- multiple`() = runSuspendTest {
         // Alice and Bob decide to splice funds out of the channel, and deduce on-chain fees from their new channel contribution.
         val balanceA = 150_000_825.msat
         val spliceOutputsA = listOf(20_000.sat, 15_000.sat, 15_000.sat).map { TxOut(it, Script.pay2wpkh(randomKey().publicKey())) }
@@ -730,7 +731,7 @@ class InteractiveTxTestsCommon : LightningTestSuite() {
     }
 
     @Test
-    fun `initiator and non-initiator combine splice-in and splice-out`() {
+    fun `initiator and non-initiator combine splice-in and splice-out`() = runSuspendTest {
         val targetFeerate = FeeratePerKw(1000.sat)
         val balanceA = 149_000_333.msat
         val additionalFundingA = 25_000.sat
@@ -811,7 +812,7 @@ class InteractiveTxTestsCommon : LightningTestSuite() {
     }
 
     @Test
-    fun `initiator does not contribute -- on-the-fly splicing`() {
+    fun `initiator does not contribute -- on-the-fly splicing`() = runSuspendTest {
         // When on-the-fly funding is used, the initiator may not contribute to the funding transaction.
         // It will receive HTLCs later that use the purchased inbound liquidity, and liquidity fees will be deduced from those HTLCs.
         val targetFeerate = FeeratePerKw(5000.sat)
@@ -1133,7 +1134,7 @@ class InteractiveTxTestsCommon : LightningTestSuite() {
     }
 
     @Test
-    fun `swap-in input missing user key`() {
+    fun `swap-in input missing user key`() = runSuspendTest {
         val f = createFixture(100_000.sat, listOf(), listOf(150_000.sat), 0.sat, listOf(), listOf(), FeeratePerKw(2500.sat), 330.sat, 0)
         val alice0 = InteractiveTxSession(f.nodeIdB, f.channelKeysA, f.keyManagerA.swapInOnChainWallet, f.fundingParamsA, 0, 0.msat, 0.msat, emptySet(), f.fundingContributionsA)
         val bob0 = InteractiveTxSession(f.nodeIdA, f.channelKeysB, f.keyManagerB.swapInOnChainWallet, f.fundingParamsB, 0, 0.msat, 0.msat, emptySet(), f.fundingContributionsB)

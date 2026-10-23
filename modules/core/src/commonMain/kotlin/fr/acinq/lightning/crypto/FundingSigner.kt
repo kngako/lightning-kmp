@@ -58,7 +58,7 @@ interface FundingSigner {
      * `VerificationNonceId` signs exactly one local commitment transaction. Callers introducing new
      * signing sites must not break it.
      */
-    fun signWithVerificationNonce(
+    suspend fun signWithVerificationNonce(
         tx: Transactions.ChannelSpendTransaction,
         remoteFundingPubKey: PublicKey,
         extraUtxos: Map<OutPoint, TxOut>,
@@ -70,7 +70,7 @@ interface FundingSigner {
      * Sign the COUNTERPARTY's commit/closing tx with a fresh single-use nonce, generated and consumed
      * within this call and never published ahead of time (they published their nonce; we did not).
      */
-    fun signWithFreshNonce(
+    suspend fun signWithFreshNonce(
         tx: Transactions.ChannelSpendTransaction,
         remoteFundingPubKey: PublicKey,
         extraUtxos: Map<OutPoint, TxOut>,
@@ -110,7 +110,7 @@ interface FundingSigner {
     fun publishedNonceSession(fundingTxId: TxId, remoteFundingPubKey: PublicKey): PublishedNonceSession
 
     /** Sign a transaction under the nonce of an earlier [publishedNonceSession]. */
-    fun signWithPublishedNonce(
+    suspend fun signWithPublishedNonce(
         tx: Transactions.ChannelSpendTransaction,
         remoteFundingPubKey: PublicKey,
         extraUtxos: Map<OutPoint, TxOut>,
@@ -164,7 +164,7 @@ interface FundingSigner {
         override fun verificationNonce(id: VerificationNonceId): IndividualNonce =
             NonceGenerator.verificationNonce(id.fundingTxId, fundingKey, id.remoteFundingPubKey, id.commitIndex).publicNonce
 
-        override fun signWithVerificationNonce(
+        override suspend fun signWithVerificationNonce(
             tx: Transactions.ChannelSpendTransaction,
             remoteFundingPubKey: PublicKey,
             extraUtxos: Map<OutPoint, TxOut>,
@@ -175,7 +175,7 @@ interface FundingSigner {
             return tx.partialSign(fundingKey, remoteFundingPubKey, extraUtxos, localNonce, listOf(localNonce.publicNonce, remoteNonce))
         }
 
-        override fun signWithFreshNonce(
+        override suspend fun signWithFreshNonce(
             tx: Transactions.ChannelSpendTransaction,
             remoteFundingPubKey: PublicKey,
             extraUtxos: Map<OutPoint, TxOut>,
@@ -189,7 +189,7 @@ interface FundingSigner {
         override fun publishedNonceSession(fundingTxId: TxId, remoteFundingPubKey: PublicKey): PublishedNonceSession =
             PrivateKeyPublishedNonceSession(NonceGenerator.signingNonce(publicKey, remoteFundingPubKey, fundingTxId))
 
-        override fun signWithPublishedNonce(
+        override suspend fun signWithPublishedNonce(
             tx: Transactions.ChannelSpendTransaction,
             remoteFundingPubKey: PublicKey,
             extraUtxos: Map<OutPoint, TxOut>,
