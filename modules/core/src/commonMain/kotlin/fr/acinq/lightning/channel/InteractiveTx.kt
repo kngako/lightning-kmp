@@ -1267,7 +1267,8 @@ data class InteractiveTxSigningSession(
                     Transactions.CommitmentFormat.AnchorOutputs -> firstCommitTx.remoteCommitTx.sign(fundingSigner.privateKey("sign first remote commit tx (segwit-v0)"), fundingParams.remoteFundingPubkey)
                     Transactions.CommitmentFormat.SimpleTaprootChannels -> {
                         val remoteNonce = session.currentRemoteCommitNonce ?: return Either.Left(MissingCommitNonce(channelParams.channelId, unsignedTx.txid, remoteCommitmentIndex))
-                        when (val psig = fundingSigner.signWithFreshNonce(firstCommitTx.remoteCommitTx, fundingParams.remoteFundingPubkey, mapOf(), unsignedTx.txid, remoteNonce)) {
+                        val context = FundingSigner.SigningContext.RemoteCommitment(channelParams, remoteCommitParams, remoteCommitmentIndex, remotePerCommitmentPoint, firstCommitTx.remoteSpec)
+                        when (val psig = fundingSigner.signWithFreshNonce(firstCommitTx.remoteCommitTx, fundingParams.remoteFundingPubkey, mapOf(), unsignedTx.txid, remoteNonce, context)) {
                             is Either.Left -> return Either.Left(InvalidCommitNonce(channelParams.channelId, unsignedTx.txid, remoteCommitmentIndex))
                             is Either.Right -> psig.value
                         }

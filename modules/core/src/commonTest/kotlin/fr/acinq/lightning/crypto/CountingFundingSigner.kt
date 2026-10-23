@@ -67,17 +67,17 @@ open class CountingFundingSigner(private val underlying: FundingSigner) : Fundin
     override fun verificationNonce(id: FundingSigner.VerificationNonceId): IndividualNonce =
         record(nonceCalls) { underlying.verificationNonce(id) }
 
-    override suspend fun signWithVerificationNonce(tx: Transactions.ChannelSpendTransaction, remoteFundingPubKey: PublicKey, extraUtxos: Map<OutPoint, TxOut>, id: FundingSigner.VerificationNonceId, remoteNonce: IndividualNonce): Either<Throwable, ChannelSpendSignature.PartialSignatureWithNonce> =
-        recordSigning(signVerificationCalls) { underlying.signWithVerificationNonce(tx, remoteFundingPubKey, extraUtxos, id, remoteNonce) }
+    override suspend fun signWithVerificationNonce(tx: Transactions.ChannelSpendTransaction, remoteFundingPubKey: PublicKey, extraUtxos: Map<OutPoint, TxOut>, id: FundingSigner.VerificationNonceId, remoteNonce: IndividualNonce, context: FundingSigner.SigningContext): Either<Throwable, ChannelSpendSignature.PartialSignatureWithNonce> =
+        recordSigning(signVerificationCalls) { underlying.signWithVerificationNonce(tx, remoteFundingPubKey, extraUtxos, id, remoteNonce, context) }
 
-    override suspend fun signWithFreshNonce(tx: Transactions.ChannelSpendTransaction, remoteFundingPubKey: PublicKey, extraUtxos: Map<OutPoint, TxOut>, fundingTxId: TxId, remoteNonce: IndividualNonce): Either<Throwable, ChannelSpendSignature.PartialSignatureWithNonce> =
-        recordSigning(signFreshCalls) { underlying.signWithFreshNonce(tx, remoteFundingPubKey, extraUtxos, fundingTxId, remoteNonce) }
+    override suspend fun signWithFreshNonce(tx: Transactions.ChannelSpendTransaction, remoteFundingPubKey: PublicKey, extraUtxos: Map<OutPoint, TxOut>, fundingTxId: TxId, remoteNonce: IndividualNonce, context: FundingSigner.SigningContext): Either<Throwable, ChannelSpendSignature.PartialSignatureWithNonce> =
+        recordSigning(signFreshCalls) { underlying.signWithFreshNonce(tx, remoteFundingPubKey, extraUtxos, fundingTxId, remoteNonce, context) }
 
     override fun publishedNonceSession(fundingTxId: TxId, remoteFundingPubKey: PublicKey): FundingSigner.PublishedNonceSession =
         record(publishedNonceCalls) { underlying.publishedNonceSession(fundingTxId, remoteFundingPubKey) }
 
-    override suspend fun signWithPublishedNonce(tx: Transactions.ChannelSpendTransaction, remoteFundingPubKey: PublicKey, extraUtxos: Map<OutPoint, TxOut>, session: FundingSigner.PublishedNonceSession, remoteNonce: IndividualNonce): Either<Throwable, ChannelSpendSignature.PartialSignatureWithNonce> =
-        recordSigning(signPublishedCalls) { underlying.signWithPublishedNonce(tx, remoteFundingPubKey, extraUtxos, session, remoteNonce) }
+    override suspend fun signWithPublishedNonce(tx: Transactions.ChannelSpendTransaction, remoteFundingPubKey: PublicKey, extraUtxos: Map<OutPoint, TxOut>, session: FundingSigner.PublishedNonceSession, remoteNonce: IndividualNonce, context: FundingSigner.SigningContext): Either<Throwable, ChannelSpendSignature.PartialSignatureWithNonce> =
+        recordSigning(signPublishedCalls) { underlying.signWithPublishedNonce(tx, remoteFundingPubKey, extraUtxos, session, remoteNonce, context) }
 
     /** Every method enters round one. */
     val roundOneCalls: Long get() = nonceCalls.value + signVerificationCalls.value + signFreshCalls.value + publishedNonceCalls.value + signPublishedCalls.value

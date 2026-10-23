@@ -45,6 +45,16 @@ interface IcebergGroupTransport {
     fun contributions(label: ByteVector32): List<NonceContribution>?
 
     /**
+     * The label for the verification nonce [id]: the same label every time it is asked for the same id,
+     * which is what lets the channel re-derive a nonce it published rather than store it. The default is
+     * [IcebergFundingSigner.verificationSessionId], a pure function of the id. A transport whose group
+     * provisions round one ahead of time cannot use that -- the funding txid in the id does not exist
+     * until the channel is being negotiated -- and assigns each new id a label from its pool instead,
+     * persisting the assignment.
+     */
+    fun verificationLabel(id: FundingSigner.VerificationNonceId): ByteVector32 = IcebergFundingSigner.verificationSessionId(id)
+
+    /**
      * The next fresh-nonce label for the channel funded by [fundingTxId]: [RemoteIcebergFundingSigner.freshLabel]
      * of a counter that only goes up. The transport persists the counter BEFORE returning, because a label
      * handed out twice signs two messages, which leaks a share and raises no error.
@@ -76,6 +86,8 @@ data class IcebergRoundTwoRequest(
     val message: ByteVector32,
     val contributions: List<NonceContribution>,
     val cosignerAggregatedNonce: AggregatedNonce,
+    /** What the transaction is, as the channel that built it says: what each member checks it against. */
+    val context: FundingSigner.SigningContext = FundingSigner.SigningContext.Unknown,
 ) {
     enum class Kind {
         /** Our own commitment, under its deterministic verification nonce: only ever at a force close. */
@@ -128,25 +140,27 @@ class RemoteIcebergFundingSigner(
     }
 
     override fun verificationNonce(id: FundingSigner.VerificationNonceId): IndividualNonce =
-        groupNonce(IcebergFundingSigner.verificationSessionId(id))
+        groupNonce(transport.verificationLabel(id))
 
     override suspend fun signWithVerificationNonce(
         tx: Transactions.ChannelSpendTransaction,
         remoteFundingPubKey: PublicKey,
         extraUtxos: Map<OutPoint, TxOut>,
         id: FundingSigner.VerificationNonceId,
-        remoteNonce: IndividualNonce
+        remoteNonce: IndividualNonce,
+        context: FundingSigner.SigningContext
     ): Either<Throwable, ChannelSpendSignature.PartialSignatureWithNonce> =
-        sign(IcebergRoundTwoRequest.Kind.LOCAL_COMMITMENT, IcebergFundingSigner.verificationSessionId(id), tx, remoteFundingPubKey, extraUtxos, id.fundingTxId, id.commitIndex, remoteNonce)
+        sign(IcebergRoundTwoRequest.Kind.LOCAL_COMMITMENT, transport.verificationLabel(id), tx, remoteFundingPubKey, extraUtxos, id.fundingTxId, id.commitIndex, remoteNonce, context)
 
     override suspend fun signWithFreshNonce(
         tx: Transactions.ChannelSpendTransaction,
         remoteFundingPubKey: PublicKey,
         extraUtxos: Map<OutPoint, TxOut>,
         fundingTxId: TxId,
-        remoteNonce: IndividualNonce
+        remoteNonce: IndividualNonce,
+        context: FundingSigner.SigningContext
     ): Either<Throwable, ChannelSpendSignature.PartialSignatureWithNonce> =
-        sign(IcebergRoundTwoRequest.Kind.FRESH, transport.nextFreshLabel(fundingTxId), tx, remoteFundingPubKey, extraUtxos, fundingTxId, null, remoteNonce)
+        sign(IcebergRoundTwoRequest.Kind.FRESH, transport.nextFreshLabel(fundingTxId), tx, remoteFundingPubKey, extraUtxos, fundingTxId, null, remoteNonce, context)
 
     override fun publishedNonceSession(fundingTxId: TxId, remoteFundingPubKey: PublicKey): FundingSigner.PublishedNonceSession {
         val label = transport.nextFreshLabel(fundingTxId)
@@ -158,10 +172,11 @@ class RemoteIcebergFundingSigner(
         remoteFundingPubKey: PublicKey,
         extraUtxos: Map<OutPoint, TxOut>,
         session: FundingSigner.PublishedNonceSession,
-        remoteNonce: IndividualNonce
+        remoteNonce: IndividualNonce,
+        context: FundingSigner.SigningContext
     ): Either<Throwable, ChannelSpendSignature.PartialSignatureWithNonce> {
         require(session is RemotePublishedNonceSession) { "published nonce session was not created by this signer" }
-        return sign(IcebergRoundTwoRequest.Kind.PUBLISHED, session.label, tx, remoteFundingPubKey, extraUtxos, session.fundingTxId, null, remoteNonce)
+        return sign(IcebergRoundTwoRequest.Kind.PUBLISHED, session.label, tx, remoteFundingPubKey, extraUtxos, session.fundingTxId, null, remoteNonce, context)
     }
 
     private suspend fun sign(
@@ -172,14 +187,15 @@ class RemoteIcebergFundingSigner(
         extraUtxos: Map<OutPoint, TxOut>,
         fundingTxId: TxId,
         commitIndex: Long?,
-        remoteNonce: IndividualNonce
+        remoteNonce: IndividualNonce,
+        context: FundingSigner.SigningContext,
     ): Either<Throwable, ChannelSpendSignature.PartialSignatureWithNonce> {
         val prepared = try {
             prepare(label, tx, remoteFundingPubKey, extraUtxos, remoteNonce)
         } catch (e: Throwable) {
             return Either.Left(e)
         }
-        val request = IcebergRoundTwoRequest(kind, label, tx, extraUtxos, fundingTxId, remoteFundingPubKey, commitIndex, prepared.message, prepared.contributions, prepared.cosignerAggregatedNonce)
+        val request = IcebergRoundTwoRequest(kind, label, tx, extraUtxos, fundingTxId, remoteFundingPubKey, commitIndex, prepared.message, prepared.contributions, prepared.cosignerAggregatedNonce, context)
         val shares = withTimeoutOrNull(deadline) { transport.roundTwo(request) } ?: return Either.Left(IcebergSigningTimeout(label, deadline))
         return when (shares) {
             is Either.Left -> shares

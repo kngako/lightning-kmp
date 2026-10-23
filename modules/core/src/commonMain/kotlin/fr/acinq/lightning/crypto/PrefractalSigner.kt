@@ -274,7 +274,8 @@ class PrefractalFundingSigner(
         remoteFundingPubKey: PublicKey,
         extraUtxos: Map<OutPoint, TxOut>,
         id: FundingSigner.VerificationNonceId,
-        remoteNonce: IndividualNonce
+        remoteNonce: IndividualNonce,
+        context: FundingSigner.SigningContext
     ): Either<Throwable, ChannelSpendSignature.PartialSignatureWithNonce> =
         sign(tx, remoteFundingPubKey, extraUtxos, verificationSessionId(id), remoteNonce)
 
@@ -283,7 +284,8 @@ class PrefractalFundingSigner(
         remoteFundingPubKey: PublicKey,
         extraUtxos: Map<OutPoint, TxOut>,
         fundingTxId: TxId,
-        remoteNonce: IndividualNonce
+        remoteNonce: IndividualNonce,
+        context: FundingSigner.SigningContext
     ): Either<Throwable, ChannelSpendSignature.PartialSignatureWithNonce> =
         sign(tx, remoteFundingPubKey, extraUtxos, randomBytes32(), remoteNonce)
 
@@ -297,7 +299,8 @@ class PrefractalFundingSigner(
         remoteFundingPubKey: PublicKey,
         extraUtxos: Map<OutPoint, TxOut>,
         session: FundingSigner.PublishedNonceSession,
-        remoteNonce: IndividualNonce
+        remoteNonce: IndividualNonce,
+        context: FundingSigner.SigningContext
     ): Either<Throwable, ChannelSpendSignature.PartialSignatureWithNonce> {
         require(session is PrefractalPublishedNonceSession) { "published nonce session was not created by this signer" }
         // Round one is re-derived from the session label rather than stored: nonces are a function of

@@ -14,7 +14,10 @@ import fr.acinq.lightning.channel.TestsHelper.mutualCloseBob
 import fr.acinq.lightning.channel.TestsHelper.reachNormal
 import fr.acinq.lightning.channel.states.Normal
 import fr.acinq.lightning.channel.states.SyncingTestsCommon.Companion.disconnect
+import fr.acinq.lightning.channel.Commitments
+import fr.acinq.lightning.crypto.FundingSigner
 import fr.acinq.lightning.crypto.IcebergGroup
+import fr.acinq.lightning.transactions.Transactions
 import fr.acinq.lightning.crypto.IcebergRoundTwoRequest
 import fr.acinq.lightning.crypto.IcebergSigner
 import fr.acinq.lightning.crypto.RemoteIcebergFundingSigner
@@ -95,6 +98,44 @@ class RemoteIcebergChannelTestsCommon : LightningTestSuite() {
         assertTrue(requests.all { it.kind == IcebergRoundTwoRequest.Kind.FRESH })
         assertEquals(requests.size, requests.map { it.label }.toSet().size)
         assertBothSidesSpendTheFundingOutput(nodes.first, nodes.second)
+    }
+
+    @Test
+    fun `every request says what it signs, and the counterparty's commitment rebuilds from what it says`() {
+        val group = IcebergSigner.keygen(4, 2, randomBytes32())
+        val (alice, bob, _) = reachNormal(bobFundingSigner = remote(group))
+        val (_, bob1) = payOnce(alice, bob)
+        val transport = transports.single()
+        val commitments = transport.requests.filter { it.kind == IcebergRoundTwoRequest.Kind.FRESH }
+        assertTrue(commitments.isNotEmpty())
+        commitments.forEach { request ->
+            val context = assertIs<FundingSigner.SigningContext.RemoteCommitment>(request.context)
+            // What a member with the node's keys does: build the transaction from the context alone.
+            val keys = bob1.channelKeys.remoteCommitmentKeys(context.channelParams, context.remotePerCommitmentPoint)
+            val (rebuilt, _) = Commitments.makeRemoteTxs(
+                channelParams = context.channelParams,
+                commitParams = context.commitParams,
+                commitKeys = keys,
+                commitTxNumber = context.commitIndex,
+                localFundingPubkey = group.groupPublicKey,
+                remoteFundingPubKey = request.remoteFundingPubKey,
+                commitmentInput = request.tx.input,
+                commitmentFormat = Transactions.CommitmentFormat.SimpleTaprootChannels,
+                spec = context.spec,
+            )
+            assertEquals(request.tx.tx, rebuilt.tx, "commitment ${context.commitIndex}")
+        }
+        localClose(bob1)
+        assertIs<FundingSigner.SigningContext.LocalCommitment>(transport.requests.last { it.kind == IcebergRoundTwoRequest.Kind.LOCAL_COMMITMENT }.context)
+    }
+
+    @Test
+    fun `a closing transaction says which scripts it pays`() = runSuspendTest {
+        val group = IcebergSigner.keygen(4, 2, randomBytes32())
+        val (alice, bob, _) = reachNormal(bobFundingSigner = remote(group))
+        mutualCloseAlice(alice, bob, TestConstants.feeratePerKw)
+        val closing = assertIs<FundingSigner.SigningContext.Closing>(transports.single().requests.last { it.kind == IcebergRoundTwoRequest.Kind.PUBLISHED }.context)
+        assertEquals(bob.commitments.channelParams.localParams.defaultFinalScriptPubKey, closing.localScript)
     }
 
     @Test

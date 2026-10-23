@@ -63,7 +63,8 @@ interface FundingSigner {
         remoteFundingPubKey: PublicKey,
         extraUtxos: Map<OutPoint, TxOut>,
         id: VerificationNonceId,
-        remoteNonce: IndividualNonce
+        remoteNonce: IndividualNonce,
+        context: SigningContext = SigningContext.Unknown
     ): Either<Throwable, ChannelSpendSignature.PartialSignatureWithNonce>
 
     /**
@@ -75,7 +76,8 @@ interface FundingSigner {
         remoteFundingPubKey: PublicKey,
         extraUtxos: Map<OutPoint, TxOut>,
         fundingTxId: TxId,
-        remoteNonce: IndividualNonce
+        remoteNonce: IndividualNonce,
+        context: SigningContext = SigningContext.Unknown
     ): Either<Throwable, ChannelSpendSignature.PartialSignatureWithNonce>
 
     /**
@@ -115,8 +117,45 @@ interface FundingSigner {
         remoteFundingPubKey: PublicKey,
         extraUtxos: Map<OutPoint, TxOut>,
         session: PublishedNonceSession,
-        remoteNonce: IndividualNonce
+        remoteNonce: IndividualNonce,
+        context: SigningContext = SigningContext.Unknown
     ): Either<Throwable, ChannelSpendSignature.PartialSignatureWithNonce>
+
+    /**
+     * What a signature is for, for a signer that checks before it signs. A private key, or a group
+     * simulated in one process, ignores it. A group whose members are on other devices is told the
+     * commitment's parameters and spec so that each member can rebuild the transaction for itself and
+     * judge it, rather than sign a hash it cannot see into (`docs/group-lightning-wallet.md`, Phase 9).
+     */
+    sealed class SigningContext {
+        /** Nothing said: the call site has not been taught to say, or there is nothing a checker could use. */
+        data object Unknown : SigningContext()
+
+        /** The counterparty's commitment number [commitIndex], built from [spec] under [channelParams] and [commitParams]. */
+        data class RemoteCommitment(
+            val channelParams: fr.acinq.lightning.channel.ChannelParams,
+            val commitParams: fr.acinq.lightning.channel.CommitParams,
+            val commitIndex: Long,
+            val remotePerCommitmentPoint: PublicKey,
+            val spec: fr.acinq.lightning.transactions.CommitmentSpec,
+        ) : SigningContext()
+
+        /** Our own commitment number [commitIndex]: signed only to publish it, at a force close. */
+        data class LocalCommitment(
+            val channelParams: fr.acinq.lightning.channel.ChannelParams,
+            val commitParams: fr.acinq.lightning.channel.CommitParams,
+            val commitIndex: Long,
+            val spec: fr.acinq.lightning.transactions.CommitmentSpec,
+        ) : SigningContext()
+
+        /** A mutual close paying [localScript] and [remoteScript], from the commitment whose spec is [spec]. */
+        data class Closing(
+            val channelParams: fr.acinq.lightning.channel.ChannelParams,
+            val localScript: fr.acinq.bitcoin.ByteVector,
+            val remoteScript: fr.acinq.bitcoin.ByteVector,
+            val spec: fr.acinq.lightning.transactions.CommitmentSpec,
+        ) : SigningContext()
+    }
 
     /** The raw funding private key, when this signer is backed by one. */
     val privateKeyOrNull: PrivateKey?
@@ -169,7 +208,8 @@ interface FundingSigner {
             remoteFundingPubKey: PublicKey,
             extraUtxos: Map<OutPoint, TxOut>,
             id: VerificationNonceId,
-            remoteNonce: IndividualNonce
+            remoteNonce: IndividualNonce,
+            context: SigningContext
         ): Either<Throwable, ChannelSpendSignature.PartialSignatureWithNonce> {
             val localNonce = NonceGenerator.verificationNonce(id.fundingTxId, fundingKey, id.remoteFundingPubKey, id.commitIndex)
             return tx.partialSign(fundingKey, remoteFundingPubKey, extraUtxos, localNonce, listOf(localNonce.publicNonce, remoteNonce))
@@ -180,7 +220,8 @@ interface FundingSigner {
             remoteFundingPubKey: PublicKey,
             extraUtxos: Map<OutPoint, TxOut>,
             fundingTxId: TxId,
-            remoteNonce: IndividualNonce
+            remoteNonce: IndividualNonce,
+            context: SigningContext
         ): Either<Throwable, ChannelSpendSignature.PartialSignatureWithNonce> {
             val localNonce = NonceGenerator.signingNonce(publicKey, remoteFundingPubKey, fundingTxId)
             return tx.partialSign(fundingKey, remoteFundingPubKey, extraUtxos, localNonce, listOf(localNonce.publicNonce, remoteNonce))
@@ -194,7 +235,8 @@ interface FundingSigner {
             remoteFundingPubKey: PublicKey,
             extraUtxos: Map<OutPoint, TxOut>,
             session: PublishedNonceSession,
-            remoteNonce: IndividualNonce
+            remoteNonce: IndividualNonce,
+            context: SigningContext
         ): Either<Throwable, ChannelSpendSignature.PartialSignatureWithNonce> {
             require(session is PrivateKeyPublishedNonceSession) { "published nonce session was not created by this signer" }
             return tx.partialSign(fundingKey, remoteFundingPubKey, extraUtxos, session.localNonce, listOf(session.publicNonce, remoteNonce))

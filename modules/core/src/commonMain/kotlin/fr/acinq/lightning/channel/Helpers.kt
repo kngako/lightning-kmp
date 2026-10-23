@@ -330,7 +330,8 @@ object Helpers {
                         // It will only happen if our peer sent an invalid nonce, in which case we cannot do anything anyway
                         // apart from eventually force-closing.
                         suspend fun localSig(tx: Transactions.ClosingTx): ChannelSpendSignature.PartialSignatureWithNonce? {
-                            return fundingSigner.signWithFreshNonce(tx, commitment.remoteFundingPubkey, mapOf(), commitment.fundingTxId, remoteNonce).right
+                            val context = FundingSigner.SigningContext.Closing(commitment.channelParams, localScriptPubkey, remoteScriptPubkey, commitment.localCommit.spec)
+                            return fundingSigner.signWithFreshNonce(tx, commitment.remoteFundingPubkey, mapOf(), commitment.fundingTxId, remoteNonce, context).right
                         }
 
                         TlvStream(
@@ -394,7 +395,8 @@ object Helpers {
                             if (!closingTx.checkRemotePartialSignature(localFundingPubkey, commitment.remoteFundingPubkey, remoteSig, localNonce.publicNonce)) {
                                 return Either.Left(InvalidCloseSignature(commitment.channelId, closingTx.tx.txid))
                             }
-                            val localSig = fundingSigner.signWithPublishedNonce(closingTx, commitment.remoteFundingPubkey, mapOf(), localNonce, remoteSig.nonce).right
+                            val context = FundingSigner.SigningContext.Closing(commitment.channelParams, localScriptPubkey, remoteScriptPubkey, commitment.localCommit.spec)
+                            val localSig = fundingSigner.signWithPublishedNonce(closingTx, commitment.remoteFundingPubkey, mapOf(), localNonce, remoteSig.nonce, context).right
                             val signedTx = localSig?.let { closingTx.aggregateSigs(localFundingPubkey, commitment.remoteFundingPubkey, it, remoteSig, mapOf()).right }
                             if (localSig == null || signedTx == null) {
                                 return Either.Left(InvalidCloseSignature(commitment.channelId, closingTx.tx.txid))
