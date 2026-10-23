@@ -246,8 +246,10 @@ object TestsHelper {
         )
 
         val channelFlags = ChannelFlags(announceChannel = false, nonInitiatorPaysCommitFees = requestRemoteFunding != null)
-        val aliceChannelParams = TestConstants.Alice.channelParams(payCommitTxFees = !channelFlags.nonInitiatorPaysCommitFees).copy(features = aliceFeatures.initFeatures())
-        val bobChannelParams = TestConstants.Bob.channelParams(payCommitTxFees = channelFlags.nonInitiatorPaysCommitFees).copy(features = bobFeatures.initFeatures())
+        // Built from the node params above rather than TestConstants', so a key manager that decides where
+        // the channel closes to (a group node's) is the one that decides it here too.
+        val aliceChannelParams = LocalChannelParams(aliceNodeParams, isChannelOpener = true, payCommitTxFees = !channelFlags.nonInitiatorPaysCommitFees).copy(features = aliceFeatures.initFeatures())
+        val bobChannelParams = LocalChannelParams(bobNodeParams, isChannelOpener = false, payCommitTxFees = channelFlags.nonInitiatorPaysCommitFees).copy(features = bobFeatures.initFeatures())
         val aliceInit = Init(aliceFeatures)
         val bobInit = Init(bobFeatures)
         val cmd = ChannelCommand.Init.Initiator(

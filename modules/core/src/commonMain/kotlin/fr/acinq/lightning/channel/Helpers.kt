@@ -524,8 +524,9 @@ object Helpers {
                 require(commitment.localCommit.txId == commitTx.txid) { "txid mismatch, provided tx is not the current local commit tx" }
                 val commitKeys = channelKeys.localCommitmentKeys(commitment.channelParams, commitment.localCommit.index)
                 val feerateDelayed = feerates.claimMainFeerate
-                // first we will claim our main output as soon as the delay is over
-                val mainDelayedTx = generateTx("main-delayed-output") {
+                // first we will claim our main output as soon as the delay is over -- unless a group holds
+                // its key, in which case the group sweeps it and this node must not try (GroupHeldOutputs)
+                val mainDelayedTx = if (commitKeys.ourDelayedPaymentKey == null) null else generateTx("main-delayed-output") {
                     Transactions.ClaimLocalDelayedOutputTx.createUnsignedTx(
                         commitKeys,
                         commitTx,
@@ -691,7 +692,7 @@ object Helpers {
                     val commitKeys = commitment.localKeys(channelKeys)
                     // Note that this will return null if the transaction wasn't one of our HTLC transactions, which may happen
                     // if our peer was able to claim the HTLC output before us (race condition between success and timeout).
-                    val htlcDelayedTx = generateTx("htlc-delayed") {
+                    val htlcDelayedTx = if (commitKeys.ourDelayedPaymentKey == null) null else generateTx("htlc-delayed") {
                         Transactions.HtlcDelayedTx.createUnsignedTx(
                             commitKeys,
                             tx,
@@ -780,6 +781,8 @@ object Helpers {
                 finalScriptPubKey: ByteVector,
                 claimMainFeerate: FeeratePerKw
             ): Transactions.ClaimRemoteDelayedOutputTx? {
+                // A group-held payment key is the group's to sweep (GroupHeldOutputs), not this node's.
+                if (commitKeys.ourPaymentKey == null) return null
                 return generateTx("claim-remote-delayed-output") {
                     Transactions.ClaimRemoteDelayedOutputTx.createUnsignedTx(
                         commitKeys,
@@ -1002,8 +1005,8 @@ object Helpers {
                 val feerateMain = feerates.claimMainFeerate
                 // We need to use a high fee here for punishment txs because after a delay they can be spent by the counterparty.
                 val feeratePenalty = feerates.fastFeerate
-                // First we will claim our main output right away.
-                val mainTx = generateTx("claim-remote-delayed-output") {
+                // First we will claim our main output right away, unless it is a group's to sweep.
+                val mainTx = if (commitKeys.ourPaymentKey == null) null else generateTx("claim-remote-delayed-output") {
                     Transactions.ClaimRemoteDelayedOutputTx.createUnsignedTx(
                         commitKeys,
                         commitTx,

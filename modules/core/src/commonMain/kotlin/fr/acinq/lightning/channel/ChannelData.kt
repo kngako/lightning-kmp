@@ -287,7 +287,7 @@ data class LocalChannelParams(
         fundingKeyPath = nodeParams.keyManager.newFundingKeyPath(isChannelOpener), // we make sure that initiator and non-initiator key path end differently
         isChannelOpener = isChannelOpener,
         paysCommitTxFees = payCommitTxFees,
-        defaultFinalScriptPubKey = nodeParams.keyManager.finalOnChainWallet.pubkeyScript(addressIndex = 0), // the default closing address is the same for all channels
+        defaultFinalScriptPubKey = nodeParams.keyManager.defaultFinalScriptPubKey, // the default closing address is the same for all channels
         features = nodeParams.features.initFeatures()
     )
 
