@@ -340,26 +340,50 @@ data class Bip84OnChainKeys(
  *  - with a signature from [userPublicKey] after the [refundDelay]
  * The keys used are static across swaps to make recovery easier.
  */
+/**
+ * What a node's interactive-tx sessions need of the swap-in keys: the key path's two keys, each address's
+ * protocol, and who signs as the user. [SwapInOnChainKeys] is a phone's, where one seed holds all of it;
+ * a group's node supplies its own, whose user key is a threshold key with no private half anywhere.
+ */
+interface SwapInKeys {
+    val userPublicKey: PublicKey
+    val remoteServerPublicKey: PublicKey
+    val refundDelay: Int
+
+    /** Signs as the user in each swap-in input's key path: [signSwapInputUser] goes through it. */
+    val signer: SwapInSigner
+
+    fun getSwapInProtocol(addressIndex: Int): SwapInProtocol
+
+    /** The legacy (p2wsh, single-key) protocol's user signature. A key set with no legacy address refuses. */
+    fun signSwapInputUserLegacy(fundingTx: Transaction, index: Int, parentTxOuts: List<TxOut>): ByteVector64
+
+    /** Our key as the *server* of a peer's swap-in, which only an LSP is. A key set that never serves refuses. */
+    fun localServerPrivateKey(remoteNodeId: PublicKey): PrivateKey
+}
+
 data class SwapInOnChainKeys(
     private val chain: Chain,
     private val master: DeterministicWallet.ExtendedPrivateKey,
-    val remoteServerPublicKey: PublicKey,
-    val refundDelay: Int = DefaultSwapInParams.RefundDelay
-) {
+    override val remoteServerPublicKey: PublicKey,
+    override val refundDelay: Int = DefaultSwapInParams.RefundDelay
+) : SwapInKeys {
     private val userExtendedPrivateKey: DeterministicWallet.ExtendedPrivateKey = master.derivePrivateKey(swapInUserKeyPath(chain))
     private val userRefundExtendedPrivateKey: DeterministicWallet.ExtendedPrivateKey = master.derivePrivateKey(swapInUserRefundKeyPath(chain))
 
     val userPrivateKey: PrivateKey = userExtendedPrivateKey.privateKey
-    val userPublicKey: PublicKey = userPrivateKey.publicKey()
+    override val userPublicKey: PublicKey = userPrivateKey.publicKey()
+
+    override val signer: SwapInSigner by lazy { LocalSwapInSigner(userPrivateKey) }
 
     private val localServerExtendedPrivateKey: DeterministicWallet.ExtendedPrivateKey = master.derivePrivateKey(swapInLocalServerKeyPath(chain))
-    fun localServerPrivateKey(remoteNodeId: PublicKey): PrivateKey = localServerExtendedPrivateKey.derivePrivateKey(perUserPath(remoteNodeId)).privateKey
+    override fun localServerPrivateKey(remoteNodeId: PublicKey): PrivateKey = localServerExtendedPrivateKey.derivePrivateKey(perUserPath(remoteNodeId)).privateKey
 
     // legacy p2wsh-based swap-in protocol, with a fixed on-chain address
     val legacySwapInProtocol = SwapInProtocolLegacy(userPublicKey, remoteServerPublicKey, refundDelay)
     val legacyDescriptor = SwapInProtocolLegacy.descriptor(chain, master.extendedPublicKey, userExtendedPrivateKey.extendedPublicKey, remoteServerPublicKey, refundDelay)
 
-    fun signSwapInputUserLegacy(fundingTx: Transaction, index: Int, parentTxOuts: List<TxOut>): ByteVector64 {
+    override fun signSwapInputUserLegacy(fundingTx: Transaction, index: Int, parentTxOuts: List<TxOut>): ByteVector64 {
         return legacySwapInProtocol.signSwapInputUser(fundingTx, index, parentTxOuts[fundingTx.txIn[index].outPoint.index.toInt()], userPrivateKey)
     }
 
@@ -376,7 +400,7 @@ data class SwapInOnChainKeys(
      * @param addressIndex address index
      * @return the swap-in protocol that matches the input public key script
      */
-    fun getSwapInProtocol(addressIndex: Int): SwapInProtocol {
+    override fun getSwapInProtocol(addressIndex: Int): SwapInProtocol {
         val userRefundPrivateKey: PrivateKey = userRefundExtendedPrivateKey.derivePrivateKey(addressIndex.toLong()).privateKey
         val userRefundPublicKey: PublicKey = userRefundPrivateKey.publicKey()
         return SwapInProtocol(userPublicKey, remoteServerPublicKey, userRefundPublicKey, refundDelay)
@@ -490,7 +514,7 @@ interface KeyManager {
 
     val nodeKeys: NodeKeys
     val finalOnChainWallet: Bip84OnChainKeys
-    val swapInOnChainWallet: SwapInOnChainKeys
+    val swapInOnChainWallet: SwapInKeys
 
     /**
      * Where a new channel closes to, fixed in its parameters when it is created. [finalOnChainWallet]'s

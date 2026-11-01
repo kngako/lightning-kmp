@@ -15,6 +15,7 @@ import fr.acinq.lightning.blockchain.fee.OnChainFeerates
 import fr.acinq.lightning.blockchain.mempool.MempoolSpaceClient
 import fr.acinq.lightning.channel.*
 import fr.acinq.lightning.channel.states.*
+import fr.acinq.lightning.crypto.SwapInOnChainKeys
 import fr.acinq.lightning.crypto.noise.*
 import fr.acinq.lightning.db.*
 import fr.acinq.lightning.logging.MDCLogger
@@ -192,7 +193,13 @@ class Peer(
     val watcher: IWatcher,
     val db: Databases,
     socketBuilder: TcpSocket.Builder?,
-    scope: CoroutineScope
+    scope: CoroutineScope,
+    /**
+     * The swap-in coins this node may splice in, when its swap-in addresses are not one seed's: a group's
+     * node watches every depositor's addresses itself and hands the result here. Null for a phone, whose
+     * [swapInWallet] is built from its own keys.
+     */
+    private val swapInWalletState: Flow<WalletState>? = null,
 ) : CoroutineScope by scope {
     companion object {
         private const val prefix: Byte = 0x00
@@ -280,7 +287,9 @@ class Peer(
     }
 
     val finalWallet = (client as? IElectrumClient)?.let { electrumClient -> FinalWallet(nodeParams.chain, nodeParams.keyManager.finalOnChainWallet, electrumClient, scope, nodeParams.loggerFactory) }
-    val swapInWallet = (client as? IElectrumClient)?.let { electrumClient -> SwapInWallet(nodeParams.chain, nodeParams.keyManager.swapInOnChainWallet, electrumClient, scope, nodeParams.loggerFactory) }
+    val swapInWallet = (client as? IElectrumClient)?.takeIf { swapInWalletState == null }?.let { electrumClient ->
+        (nodeParams.keyManager.swapInOnChainWallet as? SwapInOnChainKeys)?.let { keys -> SwapInWallet(nodeParams.chain, keys, electrumClient, scope, nodeParams.loggerFactory) }
+    }
 
     private var swapInJob: Job? = null
 
@@ -549,8 +558,9 @@ class Peer(
      * Warning: not thread-safe!
      */
     suspend fun startWatchSwapInWallet() {
+        val swapInCoins = swapInWalletState ?: swapInWallet?.wallet?.walletStateFlow
         when {
-            swapInWallet == null -> logger.warning { "swap-in wallet unavailable" }
+            swapInCoins == null -> logger.warning { "swap-in wallet unavailable" }
             else -> {
                 logger.info { "starting swap-in watch job" }
                 if (swapInJob != null) {
@@ -560,7 +570,7 @@ class Peer(
                 logger.info { "waiting for peer to be ready" }
                 waitForPeerReady()
                 swapInJob = launch {
-                    swapInWallet.wallet.walletStateFlow
+                    swapInCoins
                         .combine(currentTipFlow.filterNotNull()) { walletState, currentTip -> Pair(walletState, currentTip) }
                         .combine(peerFeeratesFlow.filterNotNull()) { (walletState, currentTip), feerates -> Triple(walletState, currentTip, feerates.fundingFeerate) }
                         .combine(nodeParams.liquidityPolicy) { (walletState, currentTip, feerate), policy -> TrySwapInFlow(currentTip, walletState, feerate, policy) }

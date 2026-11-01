@@ -67,6 +67,17 @@ interface IcebergGroupTransport {
      * `iceberg.md` says a member that sat round one out can still sign.
      */
     suspend fun roundTwo(request: IcebergRoundTwoRequest): Either<Throwable, List<SignatureShare>>
+
+    /**
+     * The next label for a swap-in input spending [outPoint], for [RemoteIcebergSwapInSigner]: like
+     * [nextFreshLabel], persisted before it is returned, and never the same twice. A transport whose group
+     * does not swap in leaves the default, and a swap-in attempt then fails by name.
+     */
+    fun nextSwapInLabel(outPoint: OutPoint): ByteVector32 = throw UnsupportedOperationException("this group does not swap in")
+
+    /** Round two for a swap-in input, as [roundTwo] is for the funding input. */
+    suspend fun roundTwoSwapIn(request: IcebergSwapInRoundTwoRequest): Either<Throwable, List<SignatureShare>> =
+        Either.Left(UnsupportedOperationException("this group does not swap in"))
 }
 
 /**

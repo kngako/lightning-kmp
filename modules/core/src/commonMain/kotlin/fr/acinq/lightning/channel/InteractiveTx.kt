@@ -13,7 +13,8 @@ import fr.acinq.lightning.blockchain.fee.FeeratePerKw
 import fr.acinq.lightning.crypto.ChannelKeys
 import fr.acinq.lightning.crypto.FundingSigner
 import fr.acinq.lightning.crypto.KeyManager
-import fr.acinq.lightning.crypto.SwapInOnChainKeys
+import fr.acinq.lightning.crypto.SwapInKeys
+import fr.acinq.lightning.crypto.SwapInSigner
 import fr.acinq.lightning.logging.MDCLogger
 import fr.acinq.lightning.transactions.*
 import fr.acinq.lightning.utils.*
@@ -302,7 +303,7 @@ data class FundingContributions(val inputs: List<InteractiveTxInput.Outgoing>, v
          */
         fun create(
             channelKeys: ChannelKeys,
-            swapInKeys: SwapInOnChainKeys,
+            swapInKeys: SwapInKeys,
             params: InteractiveTxParams,
             walletInputs: List<WalletState.Utxo>,
             liquidityPurchase: LiquidityAds.Purchase?
@@ -318,7 +319,7 @@ data class FundingContributions(val inputs: List<InteractiveTxInput.Outgoing>, v
          */
         fun create(
             channelKeys: ChannelKeys,
-            swapInKeys: SwapInOnChainKeys,
+            swapInKeys: SwapInKeys,
             params: InteractiveTxParams,
             sharedUtxo: Pair<SharedFundingInput, SharedFundingInputBalances>?,
             walletInputs: List<WalletState.Utxo>,
@@ -547,11 +548,12 @@ data class SharedTransaction(
                 .filterIsInstance<InteractiveTxInput.LocalSwapIn>()
                 .find { txIn.outPoint == it.outPoint }
                 ?.let { input ->
-                    // We generate our secret nonce when sending the corresponding input, we know it exists in the map.
-                    val userNonce = session.swapInSecretNonces[input.serialId]!!
+                    // We started the nonce session when sending the corresponding input, we know it exists in the map.
+                    val userNonce = session.localSwapInNonces[input.serialId]!!
                     val serverNonce = remoteNonces[input.serialId]!!
-                    keyManager.swapInOnChainWallet.signSwapInputUser(unsignedTx, i, previousOutputs, userNonce.first, userNonce.second, serverNonce, input.addressIndex)
-                        .map { TxSignaturesTlv.PartialSignature(it, userNonce.second, serverNonce) }
+                    val protocol = SwapInProtocol(input.userKey, input.serverKey, input.userRefundKey, input.refundDelay)
+                    keyManager.swapInOnChainWallet.signer.sign(unsignedTx, i, previousOutputs, protocol, userNonce, serverNonce)
+                        .map { TxSignaturesTlv.PartialSignature(it, userNonce.publicNonce, serverNonce) }
                         .getOrDefault(null)
                 }
         }.filterNotNull()
@@ -712,7 +714,7 @@ sealed class InteractiveTxSessionAction {
 data class InteractiveTxSession(
     val remoteNodeId: PublicKey,
     val channelKeys: ChannelKeys,
-    val swapInKeys: SwapInOnChainKeys,
+    val swapInKeys: SwapInKeys,
     val fundingParams: InteractiveTxParams,
     val localCommitIndex: Long,
     val previousFunding: SharedFundingInputBalances,
@@ -727,7 +729,10 @@ data class InteractiveTxSession(
     val txCompleteReceived: TxComplete? = null,
     val inputsReceivedCount: Int = 0,
     val outputsReceivedCount: Int = 0,
+    /** Our nonces as the *server* of the peer's swap-in inputs, by serial id. */
     val swapInSecretNonces: Map<Long, Pair<SecretNonce, IndividualNonce>> = mapOf(),
+    /** Our nonce sessions as the *user* of our own swap-in inputs, by serial id: [SwapInKeys.signer]'s. */
+    val localSwapInNonces: Map<Long, SwapInSigner.NonceSession> = mapOf(),
     val localFundingNonce: FundingSigner.PublishedNonceSession? = null,
 ) {
 
@@ -748,7 +753,7 @@ data class InteractiveTxSession(
     constructor(
         remoteNodeId: PublicKey,
         channelKeys: ChannelKeys,
-        swapInKeys: SwapInOnChainKeys,
+        swapInKeys: SwapInKeys,
         fundingParams: InteractiveTxParams,
         localCommitIndex: Long,
         previousLocalBalance: MilliSatoshi,
@@ -789,8 +794,8 @@ data class InteractiveTxSession(
                 val swapInNonces = (localSwapIns + remoteSwapIns)
                     .map { it.serialId }
                     .sorted()
-                    // We generate secret nonces whenever we send and receive tx_add_input, so we know they exist in the map.
-                    .map { serialId -> swapInSecretNonces[serialId]!!.second }
+                    // We generate nonces whenever we send and receive tx_add_input, so we know they exist in one of the maps.
+                    .map { serialId -> localSwapInNonces[serialId]?.publicNonce ?: swapInSecretNonces[serialId]!!.second }
                 val txComplete = when (fundingParams.commitmentFormat) {
                     Transactions.CommitmentFormat.AnchorOutputs -> TxComplete(fundingParams.channelId, TlvStream(TxCompleteTlv.SwapInNonces(swapInNonces)))
                     Transactions.CommitmentFormat.SimpleTaprootChannels -> {
@@ -844,18 +849,19 @@ data class InteractiveTxSession(
                     }
                     is InteractiveTxInput.Shared -> TxAddInput(fundingParams.channelId, inputOutgoing.serialId, inputOutgoing.outPoint, inputOutgoing.sequence)
                 }
-                val nextSecretNonces = when (inputOutgoing) {
-                    // Generate a secret nonce for this input if we don't already have one.
-                    is InteractiveTxInput.LocalSwapIn -> when (swapInSecretNonces[inputOutgoing.serialId]) {
+                val nextLocalNonces = when (inputOutgoing) {
+                    // Start a nonce session for this input if we don't already have one: the signer's, so that a
+                    // key held by a group is asked for its round one here rather than a private key being needed.
+                    is InteractiveTxInput.LocalSwapIn -> when (localSwapInNonces[inputOutgoing.serialId]) {
                         null -> {
-                            val secretNonce = Musig2.generateNonce(randomBytes32(), Either.Left(swapInKeys.userPrivateKey), listOf(swapInKeys.userPublicKey, swapInKeys.remoteServerPublicKey), null, null)
-                            swapInSecretNonces + (inputOutgoing.serialId to secretNonce)
+                            val protocol = SwapInProtocol(inputOutgoing.userKey, inputOutgoing.serverKey, inputOutgoing.userRefundKey, inputOutgoing.refundDelay)
+                            localSwapInNonces + (inputOutgoing.serialId to swapInKeys.signer.nonceSession(inputOutgoing.outPoint, protocol))
                         }
-                        else -> swapInSecretNonces
+                        else -> localSwapInNonces
                     }
-                    else -> swapInSecretNonces
+                    else -> localSwapInNonces
                 }
-                val next = copy(toSend = toSend.tail(), localInputs = localInputs + msg.value, txCompleteSent = null, swapInSecretNonces = nextSecretNonces)
+                val next = copy(toSend = toSend.tail(), localInputs = localInputs + msg.value, txCompleteSent = null, localSwapInNonces = nextLocalNonces)
                 Pair(next, InteractiveTxSessionAction.SendMessage(txAddInput))
             }
             is Either.Right -> {
