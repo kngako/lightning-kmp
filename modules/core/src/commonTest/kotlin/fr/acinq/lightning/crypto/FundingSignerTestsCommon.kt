@@ -99,8 +99,8 @@ class FundingSignerTestsCommon : LightningTestSuite() {
         // The raw key is unreachable: a wrong answer is worse than a loud failure.
         assertFailsWith<IllegalArgumentException> { thresholdChannelKeys.fundingKey(0) }
         assertFailsWith<IllegalStateException> { thresholdChannelKeys.fundingSigner(0).privateKey("some operation") }
-        // Splicing derives the key at the next index: it must fail loudly rather than reuse index 0.
-        assertFailsWith<IllegalArgumentException> { thresholdChannelKeys.fundingPublicKey(1) }
-        assertFailsWith<IllegalArgumentException> { thresholdChannelKeys.fundingSigner(1) }
+        // A splice asks for the key at the next index, and gets the same signer's one key (design B).
+        assertEquals(thresholdSigner.publicKey, thresholdChannelKeys.fundingPublicKey(1))
+        assertEquals(thresholdSigner, thresholdChannelKeys.fundingSigner(1))
     }
 }

@@ -149,21 +149,26 @@ data class ChannelKeys(
      *
      * Callers that only need the public key want [fundingPublicKey]; callers that need to sign want
      * [fundingSigner]. What is left here is genuinely private-key-only work -- ECDSA signing on
-     * segwit-v0 channels and splicing -- none of which is in scope for a threshold-backed channel, so
-     * throwing is the correct behaviour rather than a limitation to work around.
+     * segwit-v0 channels, splices of them included -- which is not in scope for a threshold-backed
+     * channel, so throwing is the correct behaviour rather than a limitation to work around.
      */
     fun fundingKey(fundingTxIndex: Long): PrivateKey {
         require(injectedFundingSigner == null) { "fundingKey($fundingTxIndex) was called on a channel whose funding key is held by a ${injectedFundingSigner!!::class.simpleName}: this code path has not been routed through ChannelKeys.fundingSigner and would sign with the wrong key" }
         return fundingMasterKey.derivePrivateKey(hardened(fundingTxIndex)).privateKey
     }
 
-    /** The funding public key that goes into the channel's 2-of-2 funding output. Always available. */
+    /**
+     * The funding public key that goes into the channel's 2-of-2 funding output. Always available.
+     *
+     * An injected [FundingSigner] carries one key, and serves it at every funding index: a splice's
+     * new funding output is the same signer's key with the counterparty's new one (FEATURE-PARITY.md,
+     * Phase 6, design B). A threshold group has no way to derive a second key from its first, and a
+     * key per index would mean a key ceremony per splice. The output still changes on every splice,
+     * because the counterparty rotates its own key.
+     */
     fun fundingPublicKey(fundingTxIndex: Long): PublicKey = when (val signer = injectedFundingSigner) {
         null -> fundingKey(fundingTxIndex).publicKey()
-        else -> {
-            requireIndexZero(fundingTxIndex, "fundingPublicKey")
-            signer.publicKey
-        }
+        else -> signer.publicKey
     }
 
     /**
@@ -175,20 +180,8 @@ data class ChannelKeys(
     /** Everything the channel needs to SIGN with its funding key, private or not. */
     fun fundingSigner(fundingTxIndex: Long): FundingSigner = when (val signer = injectedFundingSigner) {
         null -> FundingSigner.PrivateKeyFundingSigner(fundingKey(fundingTxIndex))
-        else -> {
-            requireIndexZero(fundingTxIndex, "fundingSigner")
-            signer
-        }
+        else -> signer
     }
-
-    /**
-     * An injected [FundingSigner] carries one key, so it can only stand in for the channel's ORIGINAL
-     * funding transaction. A splice derives a fresh funding key at the next index, which this fork
-     * does not implement for threshold signers -- fail loudly rather than reuse index 0's key at
-     * index 1, which would silently produce a funding output nobody can spend.
-     */
-    private fun requireIndexZero(fundingTxIndex: Long, operation: String) =
-        require(fundingTxIndex == 0L) { "$operation($fundingTxIndex): a channel backed by an injected FundingSigner only has a funding key at index 0 (splicing is not supported for threshold signers)" }
 
     val revocationBaseSecret: PrivateKey = commitmentMasterKey.derivePrivateKey(hardened(1)).privateKey
     val revocationBasePoint: PublicKey = revocationBaseSecret.publicKey()

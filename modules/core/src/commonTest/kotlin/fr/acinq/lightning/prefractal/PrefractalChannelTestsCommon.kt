@@ -14,6 +14,7 @@ import fr.acinq.lightning.channel.TestsHelper.mutualCloseAlice
 import fr.acinq.lightning.channel.TestsHelper.mutualCloseBob
 import fr.acinq.lightning.channel.TestsHelper.reachNormal
 import fr.acinq.lightning.channel.states.Normal
+import fr.acinq.lightning.channel.states.SpliceTestsCommon
 import fr.acinq.lightning.channel.states.SyncingTestsCommon.Companion.disconnect
 import fr.acinq.lightning.crypto.CountingFundingSigner
 import fr.acinq.lightning.crypto.FundingSigner
@@ -26,9 +27,9 @@ import fr.acinq.lightning.tests.utils.runSuspendTest
 import fr.acinq.lightning.transactions.Scripts
 import fr.acinq.lightning.transactions.Transactions
 import fr.acinq.lightning.utils.msat
+import fr.acinq.lightning.utils.sat
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
@@ -276,11 +277,13 @@ class PrefractalChannelTestsCommon : LightningTestSuite() {
     }
 
     @Test
-    fun `splice on a group-backed channel fails loudly`() {
-        val (_, bob) = openGroupBackedChannel(PrefractalSigner.keygen(3, 2, seedOddY), groupOnBobSide = true)
-        // A splice derives the funding key at index 1, which a threshold signer does not have: the
-        // channel must fail loudly instead of silently reusing index 0's key.
-        assertFailsWith<IllegalArgumentException> { bob.channelKeys.fundingPublicKey(1) }
-        assertFailsWith<IllegalArgumentException> { bob.channelKeys.fundingSigner(1) }
+    fun `a splice is served the group key at every funding index, and completes`() {
+        val group = PrefractalSigner.keygen(3, 2, seedOddY)
+        val (alice, bob) = openGroupBackedChannel(group, groupOnBobSide = true)
+        val groupKey = alice.commitments.latest.remoteFundingPubkey
+        assertEquals(groupKey, bob.channelKeys.fundingPublicKey(1))
+        val (alice1, bob1) = SpliceTestsCommon.spliceIn(alice, bob, listOf(50_000.sat))
+        assertEquals(groupKey, alice1.commitments.latest.remoteFundingPubkey)
+        assertBothSidesSpendTheFundingOutput(alice1, bob1)
     }
 }

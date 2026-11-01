@@ -443,7 +443,7 @@ Port `2c3490ad`, moving what the reference had to keep in `jvmTest` down into `c
 9. mutual close, group-backed side as **closee**
 10. mutual close, group-backed side as **closer**
 11. reconnect — verification nonces re-derive identically and the channel keeps working
-12. splice on a group-backed channel fails loudly *(deleted in Phase 6, replaced by positive tests)*
+12. splice on a group-backed channel fails loudly *(deleted in Phase 6, replaced by `IcebergSpliceTestsCommon`)*
 
 **Verification:** these plus the full existing suite. Case 11 is the one that most repays attention:
 it is the proof that round one really is a pure function of the session label, which is the property
@@ -499,6 +499,17 @@ agreeing on structure; **compare structure, not absolute microseconds**, unless 
 same machine.
 
 ## Phase 6 — Splice: lift the index guard (design B) — ~1.5–2 days
+
+**Built** on `claude/group-lightning-liquidity`, for the group Lightning wallet's liquidity purchases
+(`docs/group-lightning-liquidity.md` in the app, Phase 1). The guard is gone; `fundingKey` still
+throws. `IcebergSpliceTestsCommon` covers cases 1 to 5 below: the group splicing in and out, the
+group accepting a counterparty's splice, payments over both live commitments and then over the locked
+one, mutual and force closes on the new output, a disconnect before the splice is signed, and a
+liquidity request that names the group key at index 1 (lightning-kmp has no seller side, so the
+purchase itself runs against eclair). A recording signer asserts that no nonce identity signs two
+transactions. RBF (case 3) is not covered: `Normal` handles no `tx_init_rbf`, and a splice is bumped
+by `spliceCpfp`, which is another splice. The risk below was read against eclair v0.14.4, which takes
+our `funding_pubkey` as sent and rotates its own.
 
 Design A — routing the shared-input signature through the seam — arrives free in Phase 2, because it
 is already at the reference's HEAD (`592f3844`). What remains is the reference's own open item.

@@ -35,7 +35,6 @@ import fr.acinq.lightning.transactions.Transactions
 import fr.acinq.lightning.utils.msat
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
@@ -252,13 +251,12 @@ class IcebergChannelTestsCommon : LightningTestSuite() {
     }
 
     @Test
-    fun `splice on a group-backed channel fails loudly`() {
+    fun `a splice is served the group key at every funding index`() {
         val group = IcebergSigner.keygen(4, 2, randomBytes32())
         val (_, bob) = openGroupBackedChannel(group, groupOnBobSide = true)
-        // A splice derives the funding key at index 1, which a threshold signer does not have: the
-        // channel must fail loudly instead of silently reusing index 0's key. This index guard is
-        // what the splice paths (SpliceInit/SpliceAck in Normal.kt) hit first.
-        assertFailsWith<IllegalArgumentException> { bob.channelKeys.fundingPublicKey(1) }
-        assertFailsWith<IllegalArgumentException> { bob.channelKeys.fundingSigner(1) }
+        // Design B: the group has one key and serves it at index 1 too; IcebergSpliceTestsCommon
+        // splices with it.
+        assertEquals(group.groupPublicKey, bob.channelKeys.fundingPublicKey(1))
+        assertEquals(group.groupPublicKey, bob.channelKeys.fundingSigner(1).publicKey)
     }
 }
