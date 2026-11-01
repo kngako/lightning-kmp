@@ -81,6 +81,10 @@ class OfferManager(val nodeParams: NodeParams, val walletParams: WalletParams, v
         return OnionMessages.decryptMessage(nodeParams.nodePrivateKey, msg, logger)?.let { decrypted ->
             val invoiceRequestTlvs = decrypted.content.records.get<OnionMessagePayloadTlv.InvoiceRequest>()?.tlvs
             when {
+                invoiceRequestTlvs != null && !nodeParams.answerOfferRequests -> {
+                    logger.info { "ignoring invoice_request: this node does not answer requests for its offers" }
+                    null
+                }
                 invoiceRequestTlvs != null -> when (val invoiceRequest = OfferTypes.InvoiceRequest.validate(invoiceRequestTlvs)) {
                     is Left -> {
                         logger.warning { "received invalid invoice_request: ${invoiceRequest.value}" }
