@@ -131,21 +131,53 @@ interface FundingSigner {
         /** Nothing said: the call site has not been taught to say, or there is nothing a checker could use. */
         data object Unknown : SigningContext()
 
-        /** The counterparty's commitment number [commitIndex], built from [spec] under [channelParams] and [commitParams]. */
+        /**
+         * The counterparty's commitment number [commitIndex], built from [spec] under [channelParams] and
+         * [commitParams], on the funding output of [fundingTxIndex]. While a splice is unconfirmed a channel
+         * has one commitment per funding output, all at the same [commitIndex], and the index says which.
+         */
         data class RemoteCommitment(
             val channelParams: fr.acinq.lightning.channel.ChannelParams,
             val commitParams: fr.acinq.lightning.channel.CommitParams,
             val commitIndex: Long,
             val remotePerCommitmentPoint: PublicKey,
             val spec: fr.acinq.lightning.transactions.CommitmentSpec,
+            val fundingTxIndex: Long = 0,
         ) : SigningContext()
 
-        /** Our own commitment number [commitIndex]: signed only to publish it, at a force close. */
+        /** Our own commitment number [commitIndex], on the funding output of [fundingTxIndex]: signed only to publish it, at a force close. */
         data class LocalCommitment(
             val channelParams: fr.acinq.lightning.channel.ChannelParams,
             val commitParams: fr.acinq.lightning.channel.CommitParams,
             val commitIndex: Long,
             val spec: fr.acinq.lightning.transactions.CommitmentSpec,
+            val fundingTxIndex: Long = 0,
+        ) : SigningContext()
+
+        /**
+         * A splice's shared input: the funding output of [parentFundingTxIndex], [parentFunding], spent
+         * by a transaction whose output [fundingOutputIndex] is the new funding output, of
+         * [fundingTxIndex], shared with the counterparty's [remoteFundingPubKey] at that index.
+         *
+         * [localContribution] and [remoteContribution] are what each side adds to the channel; ours is
+         * negative by our share of the mining fee when we only buy liquidity. [purchase] is the
+         * liquidity bought with this splice, if any, and what it costs; its fees come out of our balance
+         * in the first commitment on the new output, which is signed before this. [spentOutputs] is
+         * every output the transaction spends, ours and the counterparty's, which BIP341 commits the
+         * signature to.
+         */
+        data class Splice(
+            val channelParams: fr.acinq.lightning.channel.ChannelParams,
+            val parentFundingTxIndex: Long,
+            val parentFunding: fr.acinq.lightning.transactions.Transactions.InputInfo,
+            val fundingTxIndex: Long,
+            val fundingOutputIndex: Int,
+            val remoteFundingPubKey: PublicKey,
+            val localContribution: fr.acinq.bitcoin.Satoshi,
+            val remoteContribution: fr.acinq.bitcoin.Satoshi,
+            val purchase: fr.acinq.lightning.wire.LiquidityAds.Purchase?,
+            val feerate: fr.acinq.lightning.blockchain.fee.FeeratePerKw,
+            val spentOutputs: Map<OutPoint, TxOut>,
         ) : SigningContext()
 
         /** A mutual close paying [localScript] and [remoteScript], from the commitment whose spec is [spec]. */

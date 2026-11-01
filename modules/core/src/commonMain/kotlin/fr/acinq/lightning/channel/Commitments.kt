@@ -204,7 +204,7 @@ data class RemoteCommit(val index: Long, val spec: CommitmentSpec, val txid: TxI
             Transactions.CommitmentFormat.SimpleTaprootChannels -> when (remoteNonce) {
                 null -> Either.Left(MissingCommitNonce(channelParams.channelId, commitInput.outPoint.txid, index))
                 else -> {
-                    val context = FundingSigner.SigningContext.RemoteCommitment(channelParams, commitParams, index, remotePerCommitmentPoint, spec)
+                    val context = FundingSigner.SigningContext.RemoteCommitment(channelParams, commitParams, index, remotePerCommitmentPoint, spec, fundingTxIndex)
                     when (val psig = fundingSigner.signWithFreshNonce(remoteCommitTx, remoteFundingPubKey, mapOf(), commitInput.outPoint.txid, remoteNonce, context)) {
                         is Either.Left -> Either.Left(InvalidCommitNonce(channelParams.channelId, commitInput.outPoint.txid, index))
                         is Either.Right -> Either.Right(CommitSig(channelParams.channelId, commitInput.outPoint.txid, psig.value, htlcSigs))
@@ -297,7 +297,7 @@ data class Commitment(
             is ChannelSpendSignature.PartialSignatureWithNonce -> {
                 // We have already validated the remote nonce and partial signature when we received it, so we're guaranteed
                 // that the following code cannot produce an error.
-                val context = FundingSigner.SigningContext.LocalCommitment(params, localCommitParams, localCommit.index, localCommit.spec)
+                val context = FundingSigner.SigningContext.LocalCommitment(params, localCommitParams, localCommit.index, localCommit.spec, fundingTxIndex)
                 val localSig = fundingSigner.signWithVerificationNonce(unsignedCommitTx, remoteFundingPubkey, mapOf(), FundingSigner.VerificationNonceId(fundingTxId, remoteFundingPubkey, localCommit.index), remoteSig.nonce, context).right!!
                 val signedTx = unsignedCommitTx.aggregateSigs(localFundingPubkey, remoteFundingPubkey, localSig, remoteSig, mapOf()).right!!
                 signedTx
@@ -610,7 +610,7 @@ data class Commitment(
             Transactions.CommitmentFormat.SimpleTaprootChannels -> when (nextRemoteNonce) {
                 null -> return Either.Left(MissingCommitNonce(params.channelId, fundingTxId, remoteCommit.index + 1))
                 else -> {
-                    val context = FundingSigner.SigningContext.RemoteCommitment(params, remoteCommitParams, remoteCommit.index + 1, remoteNextPerCommitmentPoint, spec)
+                    val context = FundingSigner.SigningContext.RemoteCommitment(params, remoteCommitParams, remoteCommit.index + 1, remoteNextPerCommitmentPoint, spec, fundingTxIndex)
                     when (val psig = fundingSigner.signWithFreshNonce(remoteCommitTx, remoteFundingPubkey, mapOf(), fundingTxId, nextRemoteNonce, context)) {
                         is Either.Left -> return Either.Left(InvalidCommitNonce(params.channelId, fundingTxId, remoteCommit.index + 1))
                         is Either.Right -> psig.value

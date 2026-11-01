@@ -43,7 +43,7 @@ data class SharedFundingInput(
     /** Our funding pubkey for the *previous* channel output that we're spending with this splice. */
     fun previousFundingPubkey(channelKeys: ChannelKeys): PublicKey = channelKeys.fundingPublicKey(fundingTxIndex)
 
-    suspend fun sign(session: InteractiveTxSession, tx: Transaction, spentUtxos: Map<OutPoint, TxOut>): Either<ChannelException, ChannelSpendSignature> {
+    suspend fun sign(session: InteractiveTxSession, tx: Transaction, spentUtxos: Map<OutPoint, TxOut>, context: FundingSigner.SigningContext = FundingSigner.SigningContext.Unknown): Either<ChannelException, ChannelSpendSignature> {
         // The signer for the PREVIOUS funding output -- the one this shared input spends -- which is
         // not the same index as the session's own signer for the new funding output.
         val previousFundingSigner = session.channelKeys.fundingSigner(fundingTxIndex)
@@ -59,7 +59,7 @@ data class SharedFundingInput(
             Transactions.CommitmentFormat.SimpleTaprootChannels -> {
                 val localSession = session.localFundingNonce ?: return Either.Left(MissingFundingNonce(session.fundingParams.channelId, tx.txid))
                 val remoteNonce = session.remoteFundingNonce ?: return Either.Left(MissingFundingNonce(session.fundingParams.channelId, tx.txid))
-                when (val psig = previousFundingSigner.signWithPublishedNonce(spliceTx, remoteFundingPubkey, spentUtxos, localSession, remoteNonce)) {
+                when (val psig = previousFundingSigner.signWithPublishedNonce(spliceTx, remoteFundingPubkey, spentUtxos, localSession, remoteNonce, context)) {
                     is Either.Left -> Either.Left(InvalidFundingNonce(session.fundingParams.channelId, tx.txid))
                     is Either.Right -> Either.Right(psig.value)
                 }
@@ -493,9 +493,33 @@ data class SharedTransaction(
         return Transaction(2, inputs, outputs, lockTime)
     }
 
-    suspend fun sign(session: InteractiveTxSession, keyManager: KeyManager, fundingParams: InteractiveTxParams, remoteNodeId: PublicKey): Either<ChannelException, PartiallySignedSharedTransaction> {
+    suspend fun sign(
+        session: InteractiveTxSession,
+        keyManager: KeyManager,
+        fundingParams: InteractiveTxParams,
+        remoteNodeId: PublicKey,
+        channelParams: ChannelParams? = null,
+        liquidityPurchase: LiquidityAds.Purchase? = null,
+    ): Either<ChannelException, PartiallySignedSharedTransaction> {
         val unsignedTx = buildUnsignedTx()
-        val sharedSig = when (val sig = fundingParams.sharedInput?.sign(session, unsignedTx, spentOutputs)) {
+        val context = fundingParams.sharedInput?.let { parent ->
+            channelParams?.let {
+                FundingSigner.SigningContext.Splice(
+                    channelParams = it,
+                    parentFundingTxIndex = parent.fundingTxIndex,
+                    parentFunding = parent.info,
+                    fundingTxIndex = fundingParams.fundingTxIndex,
+                    fundingOutputIndex = unsignedTx.txOut.indexOfFirst { o -> o.publicKeyScript == sharedOutput.pubkeyScript },
+                    remoteFundingPubKey = fundingParams.remoteFundingPubkey,
+                    localContribution = fundingParams.localContribution,
+                    remoteContribution = fundingParams.remoteContribution,
+                    purchase = liquidityPurchase,
+                    feerate = fundingParams.targetFeerate,
+                    spentOutputs = spentOutputs,
+                )
+            }
+        } ?: FundingSigner.SigningContext.Unknown
+        val sharedSig = when (val sig = fundingParams.sharedInput?.sign(session, unsignedTx, spentOutputs, context)) {
             is Either.Left -> return Either.Left(sig.value)
             is Either.Right -> sig.value
             null -> null
@@ -1267,7 +1291,7 @@ data class InteractiveTxSigningSession(
                     Transactions.CommitmentFormat.AnchorOutputs -> firstCommitTx.remoteCommitTx.sign(fundingSigner.privateKey("sign first remote commit tx (segwit-v0)"), fundingParams.remoteFundingPubkey)
                     Transactions.CommitmentFormat.SimpleTaprootChannels -> {
                         val remoteNonce = session.currentRemoteCommitNonce ?: return Either.Left(MissingCommitNonce(channelParams.channelId, unsignedTx.txid, remoteCommitmentIndex))
-                        val context = FundingSigner.SigningContext.RemoteCommitment(channelParams, remoteCommitParams, remoteCommitmentIndex, remotePerCommitmentPoint, firstCommitTx.remoteSpec)
+                        val context = FundingSigner.SigningContext.RemoteCommitment(channelParams, remoteCommitParams, remoteCommitmentIndex, remotePerCommitmentPoint, firstCommitTx.remoteSpec, fundingParams.fundingTxIndex)
                         when (val psig = fundingSigner.signWithFreshNonce(firstCommitTx.remoteCommitTx, fundingParams.remoteFundingPubkey, mapOf(), unsignedTx.txid, remoteNonce, context)) {
                             is Either.Left -> return Either.Left(InvalidCommitNonce(channelParams.channelId, unsignedTx.txid, remoteCommitmentIndex))
                             is Either.Right -> psig.value
@@ -1286,7 +1310,7 @@ data class InteractiveTxSigningSession(
                 // We haven't received the remote commit_sig: we don't have local htlc txs yet.
                 val unsignedLocalCommit = UnsignedLocalCommit(localCommitmentIndex, firstCommitTx.localSpec, firstCommitTx.localCommitTx.tx.txid)
                 val remoteCommit = RemoteCommit(remoteCommitmentIndex, firstCommitTx.remoteSpec, firstCommitTx.remoteCommitTx.tx.txid, remotePerCommitmentPoint)
-                sharedTx.sign(session, keyManager, fundingParams, channelParams.remoteParams.nodeId).map { signedFundingTx ->
+                sharedTx.sign(session, keyManager, fundingParams, channelParams.remoteParams.nodeId, channelParams, liquidityPurchase).map { signedFundingTx ->
                     val signingSession = InteractiveTxSigningSession(
                         fundingParams,
                         signedFundingTx,

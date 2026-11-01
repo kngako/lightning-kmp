@@ -75,16 +75,25 @@ class IcebergSpliceTestsCommon : LightningTestSuite() {
     private class OneMessagePerNonce(private val underlying: FundingSigner) : FundingSigner by underlying {
         val verification = mutableMapOf<FundingSigner.VerificationNonceId, TxId>()
         val published = mutableListOf<Pair<FundingSigner.PublishedNonceSession, TxId>>()
+        /** What each signature was said to be for, in order. */
+        val contexts = mutableListOf<FundingSigner.SigningContext>()
+
+        override suspend fun signWithFreshNonce(tx: Transactions.ChannelSpendTransaction, remoteFundingPubKey: PublicKey, extraUtxos: Map<OutPoint, TxOut>, fundingTxId: TxId, remoteNonce: IndividualNonce, context: FundingSigner.SigningContext): Either<Throwable, ChannelSpendSignature.PartialSignatureWithNonce> {
+            contexts += context
+            return underlying.signWithFreshNonce(tx, remoteFundingPubKey, extraUtxos, fundingTxId, remoteNonce, context)
+        }
 
         override suspend fun signWithVerificationNonce(tx: Transactions.ChannelSpendTransaction, remoteFundingPubKey: PublicKey, extraUtxos: Map<OutPoint, TxOut>, id: FundingSigner.VerificationNonceId, remoteNonce: IndividualNonce, context: FundingSigner.SigningContext): Either<Throwable, ChannelSpendSignature.PartialSignatureWithNonce> {
             val earlier = verification.put(id, tx.tx.txid)
             check(earlier == null || earlier == tx.tx.txid) { "verification nonce $id signed $earlier and then ${tx.tx.txid}" }
+            contexts += context
             return underlying.signWithVerificationNonce(tx, remoteFundingPubKey, extraUtxos, id, remoteNonce, context)
         }
 
         override suspend fun signWithPublishedNonce(tx: Transactions.ChannelSpendTransaction, remoteFundingPubKey: PublicKey, extraUtxos: Map<OutPoint, TxOut>, session: FundingSigner.PublishedNonceSession, remoteNonce: IndividualNonce, context: FundingSigner.SigningContext): Either<Throwable, ChannelSpendSignature.PartialSignatureWithNonce> {
             published.filter { it.first === session }.forEach { (_, earlier) -> check(earlier == tx.tx.txid) { "a published nonce session signed $earlier and then ${tx.tx.txid}" } }
             published += session to tx.tx.txid
+            contexts += context
             return underlying.signWithPublishedNonce(tx, remoteFundingPubKey, extraUtxos, session, remoteNonce, context)
         }
     }
@@ -159,6 +168,28 @@ class IcebergSpliceTestsCommon : LightningTestSuite() {
         return alice2 to bob2
     }
 
+    /**
+     * The shared input was signed once, told it was this splice: the parent output it spends, the new
+     * output by index and script, the counterparty's new key, and every output the transaction spends.
+     */
+    private fun assertToldItWasTheSplice(signer: OneMessagePerNonce, grouped: LNChannel<Normal>): FundingSigner.SigningContext.Splice {
+        val splice = signer.contexts.filterIsInstance<FundingSigner.SigningContext.Splice>().single()
+        val latest = grouped.commitments.latest
+        val parent = grouped.commitments.active.first { it.fundingTxIndex == 0L }
+        assertEquals(0, splice.parentFundingTxIndex)
+        assertEquals(1, splice.fundingTxIndex)
+        assertEquals(parent.fundingInput, splice.parentFunding.outPoint)
+        assertEquals(latest.remoteFundingPubkey, splice.remoteFundingPubKey)
+        val spliceTx = latest.localFundingStatus.signedTx!!
+        assertEquals(latest.localFundingStatus.txOut, spliceTx.txOut[splice.fundingOutputIndex])
+        assertEquals(spliceTx.txIn.map { it.outPoint }.toSet(), splice.spentOutputs.keys)
+        assertEquals(splice.parentFunding.txOut.amount + splice.localContribution + splice.remoteContribution, latest.fundingAmount)
+        // The first commitment on the new output was signed before the shared input, and said which output it was on.
+        val firstOnNew = signer.contexts.indexOfFirst { it is FundingSigner.SigningContext.RemoteCommitment && it.fundingTxIndex == 1L }
+        assertTrue(firstOnNew in 0 until signer.contexts.indexOf(splice), "the shared input was signed before the first commitment on the new output")
+        return splice
+    }
+
     @Test
     fun `the group splices in from its wallet, and serves its one key at the new index`() {
         val signer = signer()
@@ -166,38 +197,55 @@ class IcebergSpliceTestsCommon : LightningTestSuite() {
         val (alice1, bob1) = spliceIn(alice, bob, listOf(50_000.sat))
         assertSplicedUnderGroupKey(alice1, bob1, groupOnBobSide = false)
         assertSpliceTxSpendsParent(alice1)
-        assertTrue(signer.published.isNotEmpty(), "the group never signed the shared input")
+        val splice = assertToldItWasTheSplice(signer, alice1)
+        assertTrue(splice.localContribution > 0.sat && splice.remoteContribution == 0.sat)
+        assertEquals(null, splice.purchase)
     }
 
     @Test
     fun `the counterparty splices in, and the group accepts it -- the path an on-the-fly splice takes`() {
-        val (alice, bob, _) = reachNormal(bobFundingSigner = signer())
+        val signer = signer()
+        val (alice, bob, _) = reachNormal(bobFundingSigner = signer)
         val (alice1, bob1) = spliceIn(alice, bob, listOf(50_000.sat))
         assertSplicedUnderGroupKey(alice1, bob1, groupOnBobSide = true)
         assertSpliceTxSpendsParent(bob1)
+        val splice = assertToldItWasTheSplice(signer, bob1)
+        assertTrue(splice.localContribution == 0.sat && splice.remoteContribution > 0.sat)
     }
 
     @Test
     fun `the group splices out`() {
-        val (alice, bob, _) = reachNormal(aliceFundingSigner = signer())
+        val signer = signer()
+        val (alice, bob, _) = reachNormal(aliceFundingSigner = signer)
         val (alice1, commitSigAlice, bob1, commitSigBob) = spliceInAndOutWithoutSigs(alice, bob, inAmounts = listOf(50_000.sat), outAmount = 100_000.sat)
         val (alice2, bob2) = exchangeSpliceSigs(alice1, commitSigAlice, bob1, commitSigBob)
         assertSplicedUnderGroupKey(alice2, bob2, groupOnBobSide = false)
         assertSpliceTxSpendsParent(alice2)
+        // Ours falls by the amount spliced out and our share of the mining fee; the extra output is the splice-out.
+        val splice = assertToldItWasTheSplice(signer, alice2)
+        assertTrue(splice.localContribution < 0.sat)
+        assertEquals(1, alice2.commitments.latest.localFundingStatus.signedTx!!.txOut.count { it.amount == 100_000.sat })
     }
 
     @Test
     fun `payments over both live commitments, then over the locked one`() {
-        val (alice, bob, _) = reachNormal(bobFundingSigner = signer())
+        val signer = signer()
+        val (alice, bob, _) = reachNormal(bobFundingSigner = signer)
         val (alice1, bob1) = spliceIn(alice, bob, listOf(50_000.sat))
         assertEquals(2, alice1.commitments.active.size)
         // While the splice is unconfirmed, every update signs one commitment per funding output, both
-        // at the same commit index; the group signs each.
+        // at the same commit index; the group signs each, told which output each is on.
+        signer.contexts.clear()
         val (alice2, bob2) = payOnce(alice1, bob1)
         assertBothSidesSpend(alice2, bob2)
+        val whileLive = signer.contexts.filterIsInstance<FundingSigner.SigningContext.RemoteCommitment>()
+        assertEquals(setOf(0L, 1L), whileLive.map { it.fundingTxIndex }.toSet())
+        whileLive.groupBy { it.commitIndex }.values.forEach { atIndex -> assertEquals(listOf(0L, 1L), atIndex.map { it.fundingTxIndex }.sorted(), "one commitment per funding output at each index") }
         val (alice3, bob3) = lock(alice2, bob2)
+        signer.contexts.clear()
         val (alice4, bob4) = payOnce(alice3, bob3)
         assertBothSidesSpend(alice4, bob4)
+        assertEquals(setOf(1L), signer.contexts.filterIsInstance<FundingSigner.SigningContext.RemoteCommitment>().map { it.fundingTxIndex }.toSet())
     }
 
     @Test
@@ -211,11 +259,14 @@ class IcebergSpliceTestsCommon : LightningTestSuite() {
 
     @Test
     fun `a force close after a splice -- the group signs its own commitment on the new output`() {
-        val (alice, bob, _) = reachNormal(bobFundingSigner = signer())
+        val signer = signer()
+        val (alice, bob, _) = reachNormal(bobFundingSigner = signer)
         val (alice1, bob1) = spliceIn(alice, bob, listOf(50_000.sat))
         val (alice2, bob2) = lock(alice1, bob1)
         val (alice3, bob3) = payOnce(alice2, bob2)
+        signer.contexts.clear()
         localClose(bob3)
+        assertEquals(1L, signer.contexts.filterIsInstance<FundingSigner.SigningContext.LocalCommitment>().single().fundingTxIndex)
         localClose(alice3)
     }
 
