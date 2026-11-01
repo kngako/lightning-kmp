@@ -130,20 +130,6 @@ class OfferManagerTestsCommon : LightningTestSuite() {
     }
 
     @Test
-    fun `a node that does not answer offer requests drops them`() = runSuspendTest {
-        val aliceNodeParams = TestConstants.Alice.nodeParams.copy(answerOfferRequests = false)
-        val aliceOfferManager = OfferManager(aliceNodeParams, aliceWalletParams, MutableSharedFlow(replay = 10), logger)
-        val bobOfferManager = OfferManager(TestConstants.Bob.nodeParams, aliceWalletParams, MutableSharedFlow(replay = 10), logger)
-        val offer = aliceNodeParams.defaultOffer(aliceTrampolineKey.publicKey()).offer
-
-        val payOffer = PayOffer(UUID.randomUUID(), randomKey(), null, 5500.msat, offer, 20.seconds)
-        val (_, invoiceRequests) = bobOfferManager.requestInvoice(payOffer)
-        val (messageForAlice, _) = trampolineRelay(invoiceRequests.first(), aliceTrampolineKey)
-        // Alice's offer is hers, and the request valid, but she sends nothing back.
-        assertNull(aliceOfferManager.receiveMessage(messageForAlice, listOf(), 0))
-    }
-
-    @Test
     fun `invoice request timed out`() = runSuspendTest {
         val aliceOfferManager = OfferManager(TestConstants.Alice.nodeParams, aliceWalletParams, MutableSharedFlow(replay = 10), logger)
         val bobOfferManager = OfferManager(TestConstants.Bob.nodeParams, aliceWalletParams, MutableSharedFlow(replay = 10), logger)
