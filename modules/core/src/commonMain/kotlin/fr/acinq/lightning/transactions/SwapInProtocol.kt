@@ -1,5 +1,7 @@
 package fr.acinq.lightning.transactions
 
+import fr.acinq.bitcoin.ByteVector32
+
 import fr.acinq.bitcoin.*
 import fr.acinq.bitcoin.Transaction.Companion.encodeWitnessEcdsaSig
 import fr.acinq.bitcoin.crypto.musig2.IndividualNonce
@@ -22,6 +24,9 @@ data class SwapInProtocol(val userPublicKey: PublicKey, val serverPublicKey: Pub
     // It does not depend upon the user's or server's key, just the user's refund key and the refund delay.
     private val refundScript = listOf(OP_PUSHDATA(userRefundKey.xOnly()), OP_CHECKSIGVERIFY, OP_PUSHDATA(Script.encodeNumber(refundDelay)), OP_CHECKSEQUENCEVERIFY)
     private val scriptTree = ScriptTree.Leaf(refundScript)
+
+    /** The refund leaf's tree hash: the taproot tweak a key-path signer outside this class must apply. */
+    val scriptTreeHash: ByteVector32 get() = scriptTree.hash()
     val pubkeyScript: List<ScriptElt> = Script.pay2tr(internalPublicKey, scriptTree)
     val serializedPubkeyScript = Script.write(pubkeyScript).byteVector()
 

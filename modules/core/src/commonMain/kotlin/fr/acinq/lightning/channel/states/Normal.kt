@@ -24,7 +24,7 @@ data class Normal(
     val localShutdown: Shutdown?,
     val remoteShutdown: Shutdown?,
     val closeCommand: ChannelCommand.Close.MutualClose?,
-    val localCloseeNonce: FundingSigner.CloseeNonceSession?,
+    val localCloseeNonce: FundingSigner.PublishedNonceSession?,
 ) : ChannelStateWithCommitments() {
 
     override fun updateCommitments(input: Commitments): ChannelStateWithCommitments = this.copy(commitments = input)

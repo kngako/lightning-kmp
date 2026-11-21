@@ -1,5 +1,6 @@
 package fr.acinq.lightning.channel.states
 
+import fr.acinq.lightning.crypto.SwapInOnChainKeys
 import fr.acinq.bitcoin.*
 import fr.acinq.bitcoin.crypto.musig2.IndividualNonce
 import fr.acinq.lightning.Lightning.randomBytes
@@ -32,6 +33,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
 import kotlin.math.abs
 import kotlin.test.*
+import fr.acinq.lightning.tests.utils.runSuspendTest
 
 class SpliceTestsCommon : LightningTestSuite() {
 
@@ -70,7 +72,7 @@ class SpliceTestsCommon : LightningTestSuite() {
     }
 
     @Test
-    fun `splice funds in and out with pending htlcs`() {
+    fun `splice funds in and out with pending htlcs`() = runSuspendTest {
         val (alice, bob) = reachNormalWithConfirmedFundingTx()
         val (alice1, bob1, htlcs) = setupHtlcs(alice, bob)
         val (alice2, bob2) = spliceInAndOut(alice1, bob1, inAmounts = listOf(50_000.sat), outAmount = 100_000.sat)
@@ -105,7 +107,7 @@ class SpliceTestsCommon : LightningTestSuite() {
     }
 
     @Test
-    fun `splice funds in and out with pending htlcs -- upgrade to taproot`() {
+    fun `splice funds in and out with pending htlcs -- upgrade to taproot`() = runSuspendTest {
         val (alice, bob) = reachNormalWithConfirmedFundingTx(channelType = ChannelType.SupportedChannelType.AnchorOutputsZeroReserve)
         val (alice1, bob1, htlcs) = setupHtlcs(alice, bob)
         val (alice2, bob2) = spliceInAndOut(alice1, bob1, inAmounts = listOf(50_000.sat), outAmount = 100_000.sat)
@@ -1514,7 +1516,7 @@ class SpliceTestsCommon : LightningTestSuite() {
     }
 
     @Test
-    fun `force-close -- previous active commitment`() {
+    fun `force-close -- previous active commitment`() = runSuspendTest {
         val (alice, bob) = reachNormalWithConfirmedFundingTx()
         val (alice0, bob0, _) = setupHtlcs(alice, bob)
         val (alice1, bob1) = spliceOut(alice0, bob0, 75_000.sat)
@@ -1540,7 +1542,7 @@ class SpliceTestsCommon : LightningTestSuite() {
     }
 
     @Test
-    fun `force-close -- previous active commitment -- after taproot upgrade`() {
+    fun `force-close -- previous active commitment -- after taproot upgrade`() = runSuspendTest {
         val (alice, bob) = reachNormalWithConfirmedFundingTx(channelType = ChannelType.SupportedChannelType.AnchorOutputsZeroReserve)
         val (alice0, bob0, _) = setupHtlcs(alice, bob)
         val (alice1, bob1) = spliceOut(alice0, bob0, 75_000.sat)
@@ -1556,7 +1558,7 @@ class SpliceTestsCommon : LightningTestSuite() {
     }
 
     @Test
-    fun `force-close -- previous inactive commitment`() {
+    fun `force-close -- previous inactive commitment`() = runSuspendTest {
         val (alice, bob) = reachNormalWithConfirmedFundingTx(zeroConf = true)
         val (alice0, bob0, _) = setupHtlcs(alice, bob)
         val (alice1, bob1) = spliceOut(alice0, bob0, 50_000.sat)
@@ -1575,7 +1577,7 @@ class SpliceTestsCommon : LightningTestSuite() {
     }
 
     @Test
-    fun `force-close -- revoked latest active commitment`() {
+    fun `force-close -- revoked latest active commitment`() = runSuspendTest {
         val (alice, bob) = reachNormalWithConfirmedFundingTx()
         val (alice0, bob0, _) = setupHtlcs(alice, bob)
         val (alice1, bob1) = spliceOut(alice0, bob0, 50_000.sat)
@@ -1609,7 +1611,7 @@ class SpliceTestsCommon : LightningTestSuite() {
     }
 
     @Test
-    fun `force-close -- revoked previous active commitment`() {
+    fun `force-close -- revoked previous active commitment`() = runSuspendTest {
         val (alice, bob) = reachNormalWithConfirmedFundingTx()
         val (alice0, bob0, htlcs) = setupHtlcs(alice, bob)
         // We make a first splice transaction, but don't exchange splice_locked.
@@ -1689,7 +1691,7 @@ class SpliceTestsCommon : LightningTestSuite() {
     }
 
     @Test
-    fun `force-close -- revoked previous active commitment -- after taproot upgrade`() {
+    fun `force-close -- revoked previous active commitment -- after taproot upgrade`() = runSuspendTest {
         val (alice, bob) = reachNormalWithConfirmedFundingTx(channelType = ChannelType.SupportedChannelType.AnchorOutputsZeroReserve)
         val (alice0, bob0, htlcs) = setupHtlcs(alice, bob)
         assertEquals(alice0.commitments.latest.commitmentFormat, Transactions.CommitmentFormat.AnchorOutputs)
@@ -1774,7 +1776,7 @@ class SpliceTestsCommon : LightningTestSuite() {
     }
 
     @Test
-    fun `force-close -- revoked inactive commitment`() {
+    fun `force-close -- revoked inactive commitment`() = runSuspendTest {
         val (alice, bob) = reachNormalWithConfirmedFundingTx(zeroConf = true)
         val (alice0, bob0, htlcs) = setupHtlcs(alice, bob)
         val (alice1, bob1) = spliceOut(alice0, bob0, 50_000.sat)
@@ -2142,7 +2144,7 @@ class SpliceTestsCommon : LightningTestSuite() {
         }
 
         private fun createWalletWithFunds(keyManager: KeyManager, amounts: List<Satoshi>): List<WalletState.Utxo> {
-            val script = keyManager.swapInOnChainWallet.legacySwapInProtocol.pubkeyScript
+            val script = (keyManager.swapInOnChainWallet as SwapInOnChainKeys).legacySwapInProtocol.pubkeyScript
             return amounts.map { amount ->
                 val txIn = listOf(TxIn(OutPoint(TxId(randomBytes32()), 2), 0))
                 val txOut = listOf(TxOut(amount, script), TxOut(150.sat, Script.pay2wpkh(randomKey().publicKey())))

@@ -56,15 +56,21 @@ data class CommitmentPublicKeys(
  * WARNING: these private keys must never be stored on disk, in a database, or logged.
  */
 data class LocalCommitmentKeys(
-    val ourDelayedPaymentKey: PrivateKey,
+    /** Null when the delayed payment basepoint is a group's key ([GroupBasepoints]): this node cannot spend our delayed outputs. */
+    val ourDelayedPaymentKey: PrivateKey?,
     val theirPaymentPublicKey: PublicKey,
     val ourPaymentBasePoint: PublicKey,
     val ourHtlcKey: PrivateKey,
     val theirHtlcPublicKey: PublicKey,
-    val revocationPublicKey: PublicKey
+    val revocationPublicKey: PublicKey,
+    val ourDelayedPaymentPublicKey: PublicKey = requireNotNull(ourDelayedPaymentKey) { "a group-held delayed payment key needs its public key" }.publicKey(),
 ) {
+    /** The private key, for the claims this node makes itself. Throws by name when a group holds it. */
+    fun delayedPaymentKey(operation: String): PrivateKey = ourDelayedPaymentKey
+        ?: throw IllegalStateException("'$operation' needs our delayed payment key, which this channel's group holds: the group sweeps that output, not this node")
+
     val publicKeys: CommitmentPublicKeys = CommitmentPublicKeys(
-        localDelayedPaymentPublicKey = ourDelayedPaymentKey.publicKey(),
+        localDelayedPaymentPublicKey = ourDelayedPaymentPublicKey,
         remotePaymentPublicKey = theirPaymentPublicKey,
         localHtlcPublicKey = ourHtlcKey.publicKey(),
         remoteHtlcPublicKey = theirHtlcPublicKey,
@@ -77,22 +83,38 @@ data class LocalCommitmentKeys(
  * WARNING: these private keys must never be stored on disk, in a database, or logged.
  */
 data class RemoteCommitmentKeys(
-    val ourPaymentKey: PrivateKey,
+    /** Null when the payment basepoint is a group's key ([GroupBasepoints]): this node cannot spend our main output in their commitment. */
+    val ourPaymentKey: PrivateKey?,
     val theirDelayedPaymentPublicKey: PublicKey,
     val ourPaymentBasePoint: PublicKey,
     val ourHtlcKey: PrivateKey,
     val theirHtlcPublicKey: PublicKey,
-    val revocationPublicKey: PublicKey
+    val revocationPublicKey: PublicKey,
+    val ourPaymentPublicKey: PublicKey = requireNotNull(ourPaymentKey) { "a group-held payment key needs its public key" }.publicKey(),
 ) {
+    /** The private key, for the claims this node makes itself. Throws by name when a group holds it. */
+    fun paymentKey(operation: String): PrivateKey = ourPaymentKey
+        ?: throw IllegalStateException("'$operation' needs our payment key, which this channel's group holds: the group sweeps that output, not this node")
+
     // Since this is the remote commitment, local is them and remote is us.
     val publicKeys: CommitmentPublicKeys = CommitmentPublicKeys(
         localDelayedPaymentPublicKey = theirDelayedPaymentPublicKey,
-        remotePaymentPublicKey = ourPaymentKey.publicKey(),
+        remotePaymentPublicKey = ourPaymentPublicKey,
         localHtlcPublicKey = theirHtlcPublicKey,
         remoteHtlcPublicKey = ourHtlcKey.publicKey(),
         revocationPublicKey = revocationPublicKey
     )
 }
+
+/**
+ * The two commitment basepoints a group can hold instead of this node: the payment basepoint, which
+ * keys our main output in the counterparty's commitment (`to_remote`, static), and the delayed payment
+ * basepoint, which keys our main output in our own commitment (`to_local`) and the outputs of our HTLC
+ * transactions, each tweaked by a per-commitment point. Both are taproot script-path keys, so whoever
+ * holds them signs a BIP340 signature under the leaf key -- for `to_local`, under
+ * `delayedPayment + SHA256(per_commitment_point || delayedPayment)·G`.
+ */
+data class GroupBasepoints(val payment: PublicKey, val delayedPayment: PublicKey)
 
 /**
  * Keys used for a specific channel instance:
@@ -113,7 +135,8 @@ data class RemoteCommitmentKeys(
 data class ChannelKeys(
     private val fundingMasterKey: DeterministicWallet.ExtendedPrivateKey,
     private val commitmentMasterKey: DeterministicWallet.ExtendedPrivateKey,
-    private val injectedFundingSigner: FundingSigner? = null
+    private val injectedFundingSigner: FundingSigner? = null,
+    private val groupBasepoints: GroupBasepoints? = null,
 ) {
     /**
      * The raw funding private key.
@@ -126,21 +149,26 @@ data class ChannelKeys(
      *
      * Callers that only need the public key want [fundingPublicKey]; callers that need to sign want
      * [fundingSigner]. What is left here is genuinely private-key-only work -- ECDSA signing on
-     * segwit-v0 channels and splicing -- none of which is in scope for a threshold-backed channel, so
-     * throwing is the correct behaviour rather than a limitation to work around.
+     * segwit-v0 channels, splices of them included -- which is not in scope for a threshold-backed
+     * channel, so throwing is the correct behaviour rather than a limitation to work around.
      */
     fun fundingKey(fundingTxIndex: Long): PrivateKey {
         require(injectedFundingSigner == null) { "fundingKey($fundingTxIndex) was called on a channel whose funding key is held by a ${injectedFundingSigner!!::class.simpleName}: this code path has not been routed through ChannelKeys.fundingSigner and would sign with the wrong key" }
         return fundingMasterKey.derivePrivateKey(hardened(fundingTxIndex)).privateKey
     }
 
-    /** The funding public key that goes into the channel's 2-of-2 funding output. Always available. */
+    /**
+     * The funding public key that goes into the channel's 2-of-2 funding output. Always available.
+     *
+     * An injected [FundingSigner] carries one key, and serves it at every funding index: a splice's
+     * new funding output is the same signer's key with the counterparty's new one (FEATURE-PARITY.md,
+     * Phase 6, design B). A threshold group has no way to derive a second key from its first, and a
+     * key per index would mean a key ceremony per splice. The output still changes on every splice,
+     * because the counterparty rotates its own key.
+     */
     fun fundingPublicKey(fundingTxIndex: Long): PublicKey = when (val signer = injectedFundingSigner) {
         null -> fundingKey(fundingTxIndex).publicKey()
-        else -> {
-            requireIndexZero(fundingTxIndex, "fundingPublicKey")
-            signer.publicKey
-        }
+        else -> signer.publicKey
     }
 
     /**
@@ -152,27 +180,43 @@ data class ChannelKeys(
     /** Everything the channel needs to SIGN with its funding key, private or not. */
     fun fundingSigner(fundingTxIndex: Long): FundingSigner = when (val signer = injectedFundingSigner) {
         null -> FundingSigner.PrivateKeyFundingSigner(fundingKey(fundingTxIndex))
-        else -> {
-            requireIndexZero(fundingTxIndex, "fundingSigner")
-            signer
-        }
+        else -> signer
     }
-
-    /**
-     * An injected [FundingSigner] carries one key, so it can only stand in for the channel's ORIGINAL
-     * funding transaction. A splice derives a fresh funding key at the next index, which this fork
-     * does not implement for threshold signers -- fail loudly rather than reuse index 0's key at
-     * index 1, which would silently produce a funding output nobody can spend.
-     */
-    private fun requireIndexZero(fundingTxIndex: Long, operation: String) =
-        require(fundingTxIndex == 0L) { "$operation($fundingTxIndex): a channel backed by an injected FundingSigner only has a funding key at index 0 (splicing is not supported for threshold signers)" }
 
     val revocationBaseSecret: PrivateKey = commitmentMasterKey.derivePrivateKey(hardened(1)).privateKey
     val revocationBasePoint: PublicKey = revocationBaseSecret.publicKey()
-    val paymentBaseSecret: PrivateKey = commitmentMasterKey.derivePrivateKey(hardened(2)).privateKey
-    val paymentBasePoint: PublicKey = paymentBaseSecret.publicKey()
-    val delayedPaymentBaseSecret: PrivateKey = commitmentMasterKey.derivePrivateKey(hardened(3)).privateKey
-    val delayedPaymentBasePoint: PublicKey = delayedPaymentBaseSecret.publicKey()
+    private val localPaymentBaseSecret: PrivateKey = commitmentMasterKey.derivePrivateKey(hardened(2)).privateKey
+    private val localDelayedPaymentBaseSecret: PrivateKey = commitmentMasterKey.derivePrivateKey(hardened(3)).privateKey
+
+    /**
+     * POISON PILL when [groupBasepoints] is set, for the reason [fundingKey] is one: the payment
+     * basepoint is then a group's key, and a locally derived secret would be the wrong one.
+     */
+    val paymentBaseSecret: PrivateKey
+        get() {
+            require(groupBasepoints == null) { "paymentBaseSecret was called on a channel whose payment basepoint is a group's key" }
+            return localPaymentBaseSecret
+        }
+    val paymentBasePoint: PublicKey = groupBasepoints?.payment ?: localPaymentBaseSecret.publicKey()
+
+    /** POISON PILL when [groupBasepoints] is set, as [paymentBaseSecret] is. */
+    val delayedPaymentBaseSecret: PrivateKey
+        get() {
+            require(groupBasepoints == null) { "delayedPaymentBaseSecret was called on a channel whose delayed payment basepoint is a group's key" }
+            return localDelayedPaymentBaseSecret
+        }
+    val delayedPaymentBasePoint: PublicKey = groupBasepoints?.delayedPayment ?: localDelayedPaymentBaseSecret.publicKey()
+
+    /** Whether our main outputs, and the outputs of our HTLC transactions, belong to a group rather than this node. */
+    val hasGroupBasepoints: Boolean = groupBasepoints != null
+
+    /**
+     * These same keys, with the payment and delayed-payment basepoints replaced by a group's keys. Our
+     * main output in either commitment, and the delayed output of our HTLC transactions, then pay keys
+     * this node cannot sign for, and it never tries to: the group sweeps them. The revocation and HTLC
+     * keys, and the per-commitment secrets, stay this node's.
+     */
+    fun withGroupBasepoints(basepoints: GroupBasepoints): ChannelKeys = copy(groupBasepoints = basepoints)
     val htlcBaseSecret: PrivateKey = commitmentMasterKey.derivePrivateKey(hardened(4)).privateKey
     val htlcBasePoint: PublicKey = htlcBaseSecret.publicKey()
 
@@ -184,7 +228,7 @@ data class ChannelKeys(
     // @formatter:on
 
     /** Derive our local delayed payment key for our main output in the local commitment transaction. */
-    private fun delayedPaymentKey(commitmentPoint: PublicKey): PrivateKey = derivePerCommitmentKey(delayedPaymentBaseSecret, commitmentPoint)
+    private fun delayedPaymentKey(commitmentPoint: PublicKey): PrivateKey? = if (groupBasepoints == null) derivePerCommitmentKey(localDelayedPaymentBaseSecret, commitmentPoint) else null
 
     /** Derive our HTLC key for our HTLC transactions, in either the local or remote commitment transaction. */
     private fun htlcKey(commitmentPoint: PublicKey): PrivateKey = derivePerCommitmentKey(htlcBaseSecret, commitmentPoint)
@@ -200,18 +244,20 @@ data class ChannelKeys(
             ourPaymentBasePoint = paymentBasePoint,
             ourHtlcKey = htlcKey(localPerCommitmentPoint),
             theirHtlcPublicKey = remotePerCommitmentPublicKey(channelParams.remoteParams.htlcBasepoint, localPerCommitmentPoint),
-            revocationPublicKey = revocationPublicKey(channelParams.remoteParams.revocationBasepoint, localPerCommitmentPoint)
+            revocationPublicKey = revocationPublicKey(channelParams.remoteParams.revocationBasepoint, localPerCommitmentPoint),
+            ourDelayedPaymentPublicKey = remotePerCommitmentPublicKey(delayedPaymentBasePoint, localPerCommitmentPoint),
         )
     }
 
     fun remoteCommitmentKeys(channelParams: ChannelParams, remotePerCommitmentPoint: PublicKey): RemoteCommitmentKeys {
         return RemoteCommitmentKeys(
-            ourPaymentKey = paymentBaseSecret,
+            ourPaymentKey = if (groupBasepoints == null) localPaymentBaseSecret else null,
             theirDelayedPaymentPublicKey = remotePerCommitmentPublicKey(channelParams.remoteParams.delayedPaymentBasepoint, remotePerCommitmentPoint),
             ourPaymentBasePoint = paymentBasePoint,
             ourHtlcKey = htlcKey(remotePerCommitmentPoint),
             theirHtlcPublicKey = remotePerCommitmentPublicKey(channelParams.remoteParams.htlcBasepoint, remotePerCommitmentPoint),
-            revocationPublicKey = revocationPublicKey(revocationBasePoint, remotePerCommitmentPoint)
+            revocationPublicKey = revocationPublicKey(revocationBasePoint, remotePerCommitmentPoint),
+            ourPaymentPublicKey = paymentBasePoint,
         )
     }
 
@@ -294,26 +340,50 @@ data class Bip84OnChainKeys(
  *  - with a signature from [userPublicKey] after the [refundDelay]
  * The keys used are static across swaps to make recovery easier.
  */
+/**
+ * What a node's interactive-tx sessions need of the swap-in keys: the key path's two keys, each address's
+ * protocol, and who signs as the user. [SwapInOnChainKeys] is a phone's, where one seed holds all of it;
+ * a group's node supplies its own, whose user key is a threshold key with no private half anywhere.
+ */
+interface SwapInKeys {
+    val userPublicKey: PublicKey
+    val remoteServerPublicKey: PublicKey
+    val refundDelay: Int
+
+    /** Signs as the user in each swap-in input's key path: [signSwapInputUser] goes through it. */
+    val signer: SwapInSigner
+
+    fun getSwapInProtocol(addressIndex: Int): SwapInProtocol
+
+    /** The legacy (p2wsh, single-key) protocol's user signature. A key set with no legacy address refuses. */
+    fun signSwapInputUserLegacy(fundingTx: Transaction, index: Int, parentTxOuts: List<TxOut>): ByteVector64
+
+    /** Our key as the *server* of a peer's swap-in, which only an LSP is. A key set that never serves refuses. */
+    fun localServerPrivateKey(remoteNodeId: PublicKey): PrivateKey
+}
+
 data class SwapInOnChainKeys(
     private val chain: Chain,
     private val master: DeterministicWallet.ExtendedPrivateKey,
-    val remoteServerPublicKey: PublicKey,
-    val refundDelay: Int = DefaultSwapInParams.RefundDelay
-) {
+    override val remoteServerPublicKey: PublicKey,
+    override val refundDelay: Int = DefaultSwapInParams.RefundDelay
+) : SwapInKeys {
     private val userExtendedPrivateKey: DeterministicWallet.ExtendedPrivateKey = master.derivePrivateKey(swapInUserKeyPath(chain))
     private val userRefundExtendedPrivateKey: DeterministicWallet.ExtendedPrivateKey = master.derivePrivateKey(swapInUserRefundKeyPath(chain))
 
     val userPrivateKey: PrivateKey = userExtendedPrivateKey.privateKey
-    val userPublicKey: PublicKey = userPrivateKey.publicKey()
+    override val userPublicKey: PublicKey = userPrivateKey.publicKey()
+
+    override val signer: SwapInSigner by lazy { LocalSwapInSigner(userPrivateKey) }
 
     private val localServerExtendedPrivateKey: DeterministicWallet.ExtendedPrivateKey = master.derivePrivateKey(swapInLocalServerKeyPath(chain))
-    fun localServerPrivateKey(remoteNodeId: PublicKey): PrivateKey = localServerExtendedPrivateKey.derivePrivateKey(perUserPath(remoteNodeId)).privateKey
+    override fun localServerPrivateKey(remoteNodeId: PublicKey): PrivateKey = localServerExtendedPrivateKey.derivePrivateKey(perUserPath(remoteNodeId)).privateKey
 
     // legacy p2wsh-based swap-in protocol, with a fixed on-chain address
     val legacySwapInProtocol = SwapInProtocolLegacy(userPublicKey, remoteServerPublicKey, refundDelay)
     val legacyDescriptor = SwapInProtocolLegacy.descriptor(chain, master.extendedPublicKey, userExtendedPrivateKey.extendedPublicKey, remoteServerPublicKey, refundDelay)
 
-    fun signSwapInputUserLegacy(fundingTx: Transaction, index: Int, parentTxOuts: List<TxOut>): ByteVector64 {
+    override fun signSwapInputUserLegacy(fundingTx: Transaction, index: Int, parentTxOuts: List<TxOut>): ByteVector64 {
         return legacySwapInProtocol.signSwapInputUser(fundingTx, index, parentTxOuts[fundingTx.txIn[index].outPoint.index.toInt()], userPrivateKey)
     }
 
@@ -330,7 +400,7 @@ data class SwapInOnChainKeys(
      * @param addressIndex address index
      * @return the swap-in protocol that matches the input public key script
      */
-    fun getSwapInProtocol(addressIndex: Int): SwapInProtocol {
+    override fun getSwapInProtocol(addressIndex: Int): SwapInProtocol {
         val userRefundPrivateKey: PrivateKey = userRefundExtendedPrivateKey.derivePrivateKey(addressIndex.toLong()).privateKey
         val userRefundPublicKey: PublicKey = userRefundPrivateKey.publicKey()
         return SwapInProtocol(userPublicKey, remoteServerPublicKey, userRefundPublicKey, refundDelay)
@@ -444,7 +514,14 @@ interface KeyManager {
 
     val nodeKeys: NodeKeys
     val finalOnChainWallet: Bip84OnChainKeys
-    val swapInOnChainWallet: SwapInOnChainKeys
+    val swapInOnChainWallet: SwapInKeys
+
+    /**
+     * Where a new channel closes to, fixed in its parameters when it is created. [finalOnChainWallet]'s
+     * first address unless a key manager says otherwise -- a group's node closes to the group's own
+     * on-chain wallet, which this node holds no key for.
+     */
+    val defaultFinalScriptPubKey: ByteVector get() = finalOnChainWallet.pubkeyScript(addressIndex = 0)
 
     /**
      * Create a BIP32 funding key path a new channel.

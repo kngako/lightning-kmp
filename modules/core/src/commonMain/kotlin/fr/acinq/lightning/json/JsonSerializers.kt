@@ -26,7 +26,7 @@
     JsonSerializers.IndividualNonceSerializer::class,
     JsonSerializers.PartialSignatureWithNonceSerializer::class,
     JsonSerializers.LocalNonceSerializer::class,
-    JsonSerializers.CloseeNonceSessionSerializer::class,
+    JsonSerializers.PublishedNonceSessionSerializer::class,
     JsonSerializers.TxIdSerializer::class,
     JsonSerializers.KeyPathSerializer::class,
     JsonSerializers.SatoshiSerializer::class,
@@ -445,7 +445,7 @@ object JsonSerializers {
     object IndividualNonceSerializer : StringSerializer<IndividualNonce>()
     object PartialSignatureWithNonceSerializer : StringSerializer<ChannelSpendSignature.PartialSignatureWithNonce>()
     object LocalNonceSerializer : StringSerializer<Transactions.LocalNonce>()
-    object CloseeNonceSessionSerializer : StringSerializer<FundingSigner.CloseeNonceSession>({ it.publicNonce.toString() })
+    object PublishedNonceSessionSerializer : StringSerializer<FundingSigner.PublishedNonceSession>({ it.publicNonce.toString() })
     object TxIdSerializer : StringSerializer<TxId>()
     object KeyPathSerializer : StringSerializer<KeyPath>()
     object ShortChannelIdSerializer : StringSerializer<ShortChannelId>()

@@ -58,46 +58,136 @@ interface FundingSigner {
      * `VerificationNonceId` signs exactly one local commitment transaction. Callers introducing new
      * signing sites must not break it.
      */
-    fun signWithVerificationNonce(
+    suspend fun signWithVerificationNonce(
         tx: Transactions.ChannelSpendTransaction,
         remoteFundingPubKey: PublicKey,
         extraUtxos: Map<OutPoint, TxOut>,
         id: VerificationNonceId,
-        remoteNonce: IndividualNonce
+        remoteNonce: IndividualNonce,
+        context: SigningContext = SigningContext.Unknown
     ): Either<Throwable, ChannelSpendSignature.PartialSignatureWithNonce>
 
     /**
      * Sign the COUNTERPARTY's commit/closing tx with a fresh single-use nonce, generated and consumed
      * within this call and never published ahead of time (they published their nonce; we did not).
      */
-    fun signWithFreshNonce(
+    suspend fun signWithFreshNonce(
         tx: Transactions.ChannelSpendTransaction,
         remoteFundingPubKey: PublicKey,
         extraUtxos: Map<OutPoint, TxOut>,
         fundingTxId: TxId,
-        remoteNonce: IndividualNonce
+        remoteNonce: IndividualNonce,
+        context: SigningContext = SigningContext.Unknown
     ): Either<Throwable, ChannelSpendSignature.PartialSignatureWithNonce>
 
     /**
-     * Begin a one-shot mutual-close session as the CLOSEE: [CloseeNonceSession.publicNonce] is
-     * published in our `shutdown` message, and the session itself is kept in memory until we later
-     * sign the closer's closing transaction with [signWithCloseeNonce].
+     * Begin a one-shot session whose nonce is PUBLISHED BEFORE THE TRANSACTION IT WILL SIGN EXISTS:
+     * [PublishedNonceSession.publicNonce] goes out on the wire now, the session is kept in memory,
+     * and the transaction is signed later with [signWithPublishedNonce].
      *
-     * This exists because the closee's nonce is published BEFORE the transaction it will sign exists,
-     * so unlike [signWithFreshNonce] the nonce cannot be created and consumed within a single call.
-     * What the session carries is signer-specific: a private-key signer holds the secret nonce, a
-     * threshold signer only needs the session label it can re-derive everything from.
+     * That ordering is the whole reason this is a session rather than a call. [signWithFreshNonce]
+     * creates and consumes its nonce in one call because the transaction is already known;
+     * [verificationNonce] publishes early but can re-derive deterministically because the message it
+     * will sign is pinned by a [VerificationNonceId]. Here neither is true, so the nonce has to be
+     * carried across the gap.
+     *
+     * Two flows have this shape, and both use this method:
+     *  - mutual close as the CLOSEE -- the nonce is published in `shutdown`, and later signs the
+     *    closer's closing transaction, which does not exist yet when `shutdown` goes out;
+     *  - splicing -- the nonce is published in `tx_complete`'s funding-nonce TLV, and later signs the
+     *    shared input spending the previous funding output, on a shared transaction that is not final
+     *    when `tx_complete` goes out.
+     *
+     * What the session CARRIES is signer-specific and opaque to callers: a private-key signer holds
+     * the secret nonce, a threshold signer only needs the session label it re-derives round one from.
+     *
+     * ONE SESSION SIGNS AT MOST ONCE. A signer may re-derive round one from the session, so pairing
+     * one session with two different transactions is a nonce reuse that raises no error. Both flows
+     * respect this: closing advances to a fresh session after every signature, and each interactive-tx
+     * attempt (including each RBF attempt) builds its own session.
+     *
+     * @param fundingTxId the funding output being spent -- the current one when closing, the PREVIOUS
+     *                    one when splicing, since that is the output the shared input spends.
      */
-    fun closeeNonce(fundingTxId: TxId, remoteFundingPubKey: PublicKey): CloseeNonceSession
+    fun publishedNonceSession(fundingTxId: TxId, remoteFundingPubKey: PublicKey): PublishedNonceSession
 
-    /** Sign the closer's closing tx under the nonce of an earlier [closeeNonce] session. */
-    fun signWithCloseeNonce(
+    /** Sign a transaction under the nonce of an earlier [publishedNonceSession]. */
+    suspend fun signWithPublishedNonce(
         tx: Transactions.ChannelSpendTransaction,
         remoteFundingPubKey: PublicKey,
         extraUtxos: Map<OutPoint, TxOut>,
-        session: CloseeNonceSession,
-        remoteNonce: IndividualNonce
+        session: PublishedNonceSession,
+        remoteNonce: IndividualNonce,
+        context: SigningContext = SigningContext.Unknown
     ): Either<Throwable, ChannelSpendSignature.PartialSignatureWithNonce>
+
+    /**
+     * What a signature is for, for a signer that checks before it signs. A private key, or a group
+     * simulated in one process, ignores it. A group whose members are on other devices is told the
+     * commitment's parameters and spec so that each member can rebuild the transaction for itself and
+     * judge it, rather than sign a hash it cannot see into (`docs/group-lightning-wallet.md`, Phase 9).
+     */
+    sealed class SigningContext {
+        /** Nothing said: the call site has not been taught to say, or there is nothing a checker could use. */
+        data object Unknown : SigningContext()
+
+        /**
+         * The counterparty's commitment number [commitIndex], built from [spec] under [channelParams] and
+         * [commitParams], on the funding output of [fundingTxIndex]. While a splice is unconfirmed a channel
+         * has one commitment per funding output, all at the same [commitIndex], and the index says which.
+         */
+        data class RemoteCommitment(
+            val channelParams: fr.acinq.lightning.channel.ChannelParams,
+            val commitParams: fr.acinq.lightning.channel.CommitParams,
+            val commitIndex: Long,
+            val remotePerCommitmentPoint: PublicKey,
+            val spec: fr.acinq.lightning.transactions.CommitmentSpec,
+            val fundingTxIndex: Long = 0,
+        ) : SigningContext()
+
+        /** Our own commitment number [commitIndex], on the funding output of [fundingTxIndex]: signed only to publish it, at a force close. */
+        data class LocalCommitment(
+            val channelParams: fr.acinq.lightning.channel.ChannelParams,
+            val commitParams: fr.acinq.lightning.channel.CommitParams,
+            val commitIndex: Long,
+            val spec: fr.acinq.lightning.transactions.CommitmentSpec,
+            val fundingTxIndex: Long = 0,
+        ) : SigningContext()
+
+        /**
+         * A splice's shared input: the funding output of [parentFundingTxIndex], [parentFunding], spent
+         * by a transaction whose output [fundingOutputIndex] is the new funding output, of
+         * [fundingTxIndex], shared with the counterparty's [remoteFundingPubKey] at that index.
+         *
+         * [localContribution] and [remoteContribution] are what each side adds to the channel; ours is
+         * negative by our share of the mining fee when we only buy liquidity. [purchase] is the
+         * liquidity bought with this splice, if any, and what it costs; its fees come out of our balance
+         * in the first commitment on the new output, which is signed before this. [spentOutputs] is
+         * every output the transaction spends, ours and the counterparty's, which BIP341 commits the
+         * signature to.
+         */
+        data class Splice(
+            val channelParams: fr.acinq.lightning.channel.ChannelParams,
+            val parentFundingTxIndex: Long,
+            val parentFunding: fr.acinq.lightning.transactions.Transactions.InputInfo,
+            val fundingTxIndex: Long,
+            val fundingOutputIndex: Int,
+            val remoteFundingPubKey: PublicKey,
+            val localContribution: fr.acinq.bitcoin.Satoshi,
+            val remoteContribution: fr.acinq.bitcoin.Satoshi,
+            val purchase: fr.acinq.lightning.wire.LiquidityAds.Purchase?,
+            val feerate: fr.acinq.lightning.blockchain.fee.FeeratePerKw,
+            val spentOutputs: Map<OutPoint, TxOut>,
+        ) : SigningContext()
+
+        /** A mutual close paying [localScript] and [remoteScript], from the commitment whose spec is [spec]. */
+        data class Closing(
+            val channelParams: fr.acinq.lightning.channel.ChannelParams,
+            val localScript: fr.acinq.bitcoin.ByteVector,
+            val remoteScript: fr.acinq.bitcoin.ByteVector,
+            val spec: fr.acinq.lightning.transactions.CommitmentSpec,
+        ) : SigningContext()
+    }
 
     /** The raw funding private key, when this signer is backed by one. */
     val privateKeyOrNull: PrivateKey?
@@ -121,12 +211,19 @@ interface FundingSigner {
     data class VerificationNonceId(val fundingTxId: TxId, val remoteFundingPubKey: PublicKey, val commitIndex: Long)
 
     /**
-     * A one-shot closee nonce session created by [FundingSigner.closeeNonce]. Opaque to callers: they
-     * publish [publicNonce] in `shutdown` and hand the session back to [FundingSigner.signWithCloseeNonce].
+     * A one-shot session created by [FundingSigner.publishedNonceSession]. Opaque to callers: they
+     * publish [publicNonce] on the wire and hand the session back to
+     * [FundingSigner.signWithPublishedNonce] when the transaction to sign finally exists.
+     *
      * In-memory only -- never persisted, and dropped on disconnection, exactly like the
-     * [Transactions.LocalNonce] it replaces in the closing flow.
+     * [Transactions.LocalNonce] it replaces. That is not a limitation to fix: the peer has to be told
+     * the nonce, and after a reconnection both flows restart from a fresh session anyway (a new
+     * `shutdown`, a new interactive-tx attempt).
+     *
+     * Deliberately NOT a data class: identity equality is correct here, since two sessions built
+     * independently are two different nonces even when their public parts happen to be compared.
      */
-    abstract class CloseeNonceSession {
+    abstract class PublishedNonceSession {
         abstract val publicNonce: IndividualNonce
     }
 
@@ -138,43 +235,46 @@ interface FundingSigner {
         override fun verificationNonce(id: VerificationNonceId): IndividualNonce =
             NonceGenerator.verificationNonce(id.fundingTxId, fundingKey, id.remoteFundingPubKey, id.commitIndex).publicNonce
 
-        override fun signWithVerificationNonce(
+        override suspend fun signWithVerificationNonce(
             tx: Transactions.ChannelSpendTransaction,
             remoteFundingPubKey: PublicKey,
             extraUtxos: Map<OutPoint, TxOut>,
             id: VerificationNonceId,
-            remoteNonce: IndividualNonce
+            remoteNonce: IndividualNonce,
+            context: SigningContext
         ): Either<Throwable, ChannelSpendSignature.PartialSignatureWithNonce> {
             val localNonce = NonceGenerator.verificationNonce(id.fundingTxId, fundingKey, id.remoteFundingPubKey, id.commitIndex)
             return tx.partialSign(fundingKey, remoteFundingPubKey, extraUtxos, localNonce, listOf(localNonce.publicNonce, remoteNonce))
         }
 
-        override fun signWithFreshNonce(
+        override suspend fun signWithFreshNonce(
             tx: Transactions.ChannelSpendTransaction,
             remoteFundingPubKey: PublicKey,
             extraUtxos: Map<OutPoint, TxOut>,
             fundingTxId: TxId,
-            remoteNonce: IndividualNonce
+            remoteNonce: IndividualNonce,
+            context: SigningContext
         ): Either<Throwable, ChannelSpendSignature.PartialSignatureWithNonce> {
             val localNonce = NonceGenerator.signingNonce(publicKey, remoteFundingPubKey, fundingTxId)
             return tx.partialSign(fundingKey, remoteFundingPubKey, extraUtxos, localNonce, listOf(localNonce.publicNonce, remoteNonce))
         }
 
-        override fun closeeNonce(fundingTxId: TxId, remoteFundingPubKey: PublicKey): CloseeNonceSession =
-            PrivateKeyCloseeNonceSession(NonceGenerator.signingNonce(publicKey, remoteFundingPubKey, fundingTxId))
+        override fun publishedNonceSession(fundingTxId: TxId, remoteFundingPubKey: PublicKey): PublishedNonceSession =
+            PrivateKeyPublishedNonceSession(NonceGenerator.signingNonce(publicKey, remoteFundingPubKey, fundingTxId))
 
-        override fun signWithCloseeNonce(
+        override suspend fun signWithPublishedNonce(
             tx: Transactions.ChannelSpendTransaction,
             remoteFundingPubKey: PublicKey,
             extraUtxos: Map<OutPoint, TxOut>,
-            session: CloseeNonceSession,
-            remoteNonce: IndividualNonce
+            session: PublishedNonceSession,
+            remoteNonce: IndividualNonce,
+            context: SigningContext
         ): Either<Throwable, ChannelSpendSignature.PartialSignatureWithNonce> {
-            require(session is PrivateKeyCloseeNonceSession) { "closee nonce session was not created by this signer" }
+            require(session is PrivateKeyPublishedNonceSession) { "published nonce session was not created by this signer" }
             return tx.partialSign(fundingKey, remoteFundingPubKey, extraUtxos, session.localNonce, listOf(session.publicNonce, remoteNonce))
         }
 
-        private class PrivateKeyCloseeNonceSession(val localNonce: Transactions.LocalNonce) : CloseeNonceSession() {
+        private class PrivateKeyPublishedNonceSession(val localNonce: Transactions.LocalNonce) : PublishedNonceSession() {
             override val publicNonce: IndividualNonce = localNonce.publicNonce
         }
     }

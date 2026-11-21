@@ -1,8 +1,11 @@
 # Splice routing for threshold-backed channels -- plan
 
 Date: 2026-08-29
-Status: plan. Splicing on a group-backed channel is blocked loudly today (see
-`ICEBERG-PORT.md`, "Explicit exclusions"); this document is the design for unblocking it.
+Status: plan, since **implemented** on the `threshold` line. Splicing on a group-backed channel works:
+the funding signer serves the group key at every funding index, and the shared input of the previous
+funding output goes through it (see [FEATURE-PARITY.md](FEATURE-PARITY.md) and
+`IcebergSpliceTestsCommon`). The design below is kept for its reasoning; "blocked loudly today"
+described the code when it was written.
 
 Currently blocked loudly, exactly as planned: `SpliceInit`/`SpliceAck` derive the funding key at
 index n+1 (`states/Normal.kt:424,471`), which hits the injected-signer index-0 guard in

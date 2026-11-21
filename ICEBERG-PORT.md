@@ -1,7 +1,17 @@
 # Porting Iceberg threshold signing to lightning-kmp
 
 Date: 2026-08-27
-Status: **implemented** (2026-08-29). The plan below was carried out as written; see
+Status: **implemented** (2026-08-29), then **superseded in its plumbing**.
+
+> **Since the merge with the `threshold` line.** This port ran against a locally published
+> `secp256k1-kmp` fork (`0.23.0-iceberg`, from `publish-iceberg-secp256k1.sh`) and a JVM-only
+> `IcebergSigner` in `jvmMain`. [FEATURE-PARITY.md](FEATURE-PARITY.md) re-did it over the composite
+> build of `bitcoin-kmp` and `secp256k1-kmp`, with a multiplatform `IcebergSigner` in `commonMain`.
+> That port is now the code: the `jvmMain` signer, its JVM-only tests (now in `commonTest` under the
+> same names), the publish script and the `mavenLocal` resolution are gone. The measurement harness
+> (`IcebergCycleMeasurementRun`, `IcebergBenchmark`, the `icebergMeasurement` task) survives,
+> ported to the multiplatform signer. The text below is the original plan and its notes, kept for
+> the reasoning and the measured numbers. File paths and dependency details in it are historical. The plan below was carried out as written; see
 "Implementation notes" at the end for what actually happened, including two places where
 lightning-kmp differed from what the plan assumed.
 

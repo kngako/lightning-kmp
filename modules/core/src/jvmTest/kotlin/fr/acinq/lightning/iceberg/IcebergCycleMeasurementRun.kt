@@ -5,6 +5,8 @@ import fr.acinq.lightning.Lightning.randomKey
 import fr.acinq.lightning.channel.LNChannel
 import fr.acinq.lightning.channel.TestsHelper
 import fr.acinq.lightning.channel.states.Normal
+import fr.acinq.lightning.crypto.CallCounter
+import fr.acinq.lightning.crypto.CountingFundingSigner
 import fr.acinq.lightning.crypto.FundingSigner
 import fr.acinq.lightning.crypto.IcebergFundingSigner
 import fr.acinq.lightning.crypto.IcebergSigner
@@ -84,7 +86,7 @@ object IcebergCycleMeasurementRun {
         fun resumeCounting() = counting.set(true)
 
         // Time only the wrapped call; the base's per-method counters and round split are reused.
-        override fun <A> record(counter: AtomicLong, call: () -> A): A {
+        override fun <A> record(counter: CallCounter, call: () -> A): A {
             if (!counting.get()) return call()
             val t0 = System.nanoTime()
             try {
@@ -92,7 +94,20 @@ object IcebergCycleMeasurementRun {
             } finally {
                 nanos.addAndGet(System.nanoTime() - t0)
                 calls.incrementAndGet()
-                counter.incrementAndGet()
+                counter.increment()
+            }
+        }
+
+        // The signing methods suspend while a remote group answers; a local group never does.
+        override suspend fun <A> recordSigning(counter: CallCounter, call: suspend () -> A): A {
+            if (!counting.get()) return call()
+            val t0 = System.nanoTime()
+            try {
+                return call()
+            } finally {
+                nanos.addAndGet(System.nanoTime() - t0)
+                calls.incrementAndGet()
+                counter.increment()
             }
         }
 
@@ -164,7 +179,7 @@ object IcebergCycleMeasurementRun {
     }
 
     private fun openGroupArm(config: Config): Arm {
-        val group = IcebergSigner.keygen(config.n, config.t, randomBytes32().toByteArray())
+        val group = IcebergSigner.keygen(config.n, config.t, randomBytes32())
         val signer = TimingFundingSigner(IcebergFundingSigner(group))
         val (alice, bob, _) = TestsHelper.reachNormal(bobFundingSigner = signer)
         return Arm(alice, bob, signer)

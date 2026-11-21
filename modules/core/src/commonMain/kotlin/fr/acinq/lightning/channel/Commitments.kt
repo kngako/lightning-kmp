@@ -163,7 +163,7 @@ data class LocalCommit(val index: Long, val spec: CommitmentSpec, val txId: TxId
 
 /** The remote commitment maps to a commitment transaction that only our peer can sign and broadcast. */
 data class RemoteCommit(val index: Long, val spec: CommitmentSpec, val txid: TxId, val remotePerCommitmentPoint: PublicKey) {
-    fun sign(
+    suspend fun sign(
         channelParams: ChannelParams,
         commitParams: CommitParams,
         channelKeys: ChannelKeys,
@@ -204,7 +204,8 @@ data class RemoteCommit(val index: Long, val spec: CommitmentSpec, val txid: TxI
             Transactions.CommitmentFormat.SimpleTaprootChannels -> when (remoteNonce) {
                 null -> Either.Left(MissingCommitNonce(channelParams.channelId, commitInput.outPoint.txid, index))
                 else -> {
-                    when (val psig = fundingSigner.signWithFreshNonce(remoteCommitTx, remoteFundingPubKey, mapOf(), commitInput.outPoint.txid, remoteNonce)) {
+                    val context = FundingSigner.SigningContext.RemoteCommitment(channelParams, commitParams, index, remotePerCommitmentPoint, spec, fundingTxIndex)
+                    when (val psig = fundingSigner.signWithFreshNonce(remoteCommitTx, remoteFundingPubKey, mapOf(), commitInput.outPoint.txid, remoteNonce, context)) {
                         is Either.Left -> Either.Left(InvalidCommitNonce(channelParams.channelId, commitInput.outPoint.txid, index))
                         is Either.Right -> Either.Right(CommitSig(channelParams.channelId, commitInput.outPoint.txid, psig.value, htlcSigs))
                     }
@@ -213,7 +214,7 @@ data class RemoteCommit(val index: Long, val spec: CommitmentSpec, val txid: TxI
         }
     }
 
-    fun sign(channelParams: ChannelParams, channelKeys: ChannelKeys, signingSession: InteractiveTxSigningSession, remoteNonce: IndividualNonce?, logger: MDCLogger): Either<ChannelException, CommitSig> {
+    suspend fun sign(channelParams: ChannelParams, channelKeys: ChannelKeys, signingSession: InteractiveTxSigningSession, remoteNonce: IndividualNonce?, logger: MDCLogger): Either<ChannelException, CommitSig> {
         return sign(
             channelParams,
             signingSession.remoteCommitParams,
@@ -281,7 +282,7 @@ data class Commitment(
     fun commitInput(channelKeys: ChannelKeys): Transactions.InputInfo = commitInput(localFundingPubkey(channelKeys))
 
     /** Return a fully signed commit tx, that can be published as-is. */
-    fun fullySignedCommitTx(params: ChannelParams, channelKeys: ChannelKeys): Transaction {
+    suspend fun fullySignedCommitTx(params: ChannelParams, channelKeys: ChannelKeys): Transaction {
         val fundingSigner = channelKeys.fundingSigner(fundingTxIndex)
         val localFundingPubkey = fundingSigner.publicKey
         val commitKeys = channelKeys.localCommitmentKeys(params, localCommit.index)
@@ -296,7 +297,8 @@ data class Commitment(
             is ChannelSpendSignature.PartialSignatureWithNonce -> {
                 // We have already validated the remote nonce and partial signature when we received it, so we're guaranteed
                 // that the following code cannot produce an error.
-                val localSig = fundingSigner.signWithVerificationNonce(unsignedCommitTx, remoteFundingPubkey, mapOf(), FundingSigner.VerificationNonceId(fundingTxId, remoteFundingPubkey, localCommit.index), remoteSig.nonce).right!!
+                val context = FundingSigner.SigningContext.LocalCommitment(params, localCommitParams, localCommit.index, localCommit.spec, fundingTxIndex)
+                val localSig = fundingSigner.signWithVerificationNonce(unsignedCommitTx, remoteFundingPubkey, mapOf(), FundingSigner.VerificationNonceId(fundingTxId, remoteFundingPubkey, localCommit.index), remoteSig.nonce, context).right!!
                 val signedTx = unsignedCommitTx.aggregateSigs(localFundingPubkey, remoteFundingPubkey, localSig, remoteSig, mapOf()).right!!
                 signedTx
             }
@@ -579,7 +581,7 @@ data class Commitment(
         }
     }
 
-    fun sendCommit(
+    suspend fun sendCommit(
         params: ChannelParams,
         channelKeys: ChannelKeys,
         commitKeys: RemoteCommitmentKeys,
@@ -608,7 +610,8 @@ data class Commitment(
             Transactions.CommitmentFormat.SimpleTaprootChannels -> when (nextRemoteNonce) {
                 null -> return Either.Left(MissingCommitNonce(params.channelId, fundingTxId, remoteCommit.index + 1))
                 else -> {
-                    when (val psig = fundingSigner.signWithFreshNonce(remoteCommitTx, remoteFundingPubkey, mapOf(), fundingTxId, nextRemoteNonce)) {
+                    val context = FundingSigner.SigningContext.RemoteCommitment(params, remoteCommitParams, remoteCommit.index + 1, remoteNextPerCommitmentPoint, spec, fundingTxIndex)
+                    when (val psig = fundingSigner.signWithFreshNonce(remoteCommitTx, remoteFundingPubkey, mapOf(), fundingTxId, nextRemoteNonce, context)) {
                         is Either.Left -> return Either.Left(InvalidCommitNonce(params.channelId, fundingTxId, remoteCommit.index + 1))
                         is Either.Right -> psig.value
                     }
@@ -678,7 +681,7 @@ data class FullCommitment(val channelParams: ChannelParams, val changes: Commitm
     fun commitInput(channelKeys: ChannelKeys): Transactions.InputInfo = commitment.commitInput(channelKeys)
 
     /** Return a fully signed commit tx, that can be published as-is. */
-    fun fullySignedCommitTx(channelKeys: ChannelKeys): Transaction = commitment.fullySignedCommitTx(channelParams, channelKeys)
+    suspend fun fullySignedCommitTx(channelKeys: ChannelKeys): Transaction = commitment.fullySignedCommitTx(channelParams, channelKeys)
 
     /** Return the HTLC transactions for our local commit and the corresponding remote signatures. */
     fun unsignedHtlcTxs(channelKeys: ChannelKeys): List<Pair<HtlcTx, ByteVector64>> = commitment.unsignedHtlcTxs(channelParams, channelKeys)
@@ -890,7 +893,7 @@ data class Commitments(
         return failure?.let { Either.Left(it) } ?: Either.Right(copy(changes = changes1))
     }
 
-    fun sendCommit(channelKeys: ChannelKeys, remoteCommitNonces: Map<TxId, IndividualNonce>, logger: MDCLogger): Either<ChannelException, Pair<Commitments, CommitSigs>> {
+    suspend fun sendCommit(channelKeys: ChannelKeys, remoteCommitNonces: Map<TxId, IndividualNonce>, logger: MDCLogger): Either<ChannelException, Pair<Commitments, CommitSigs>> {
         val remoteNextPerCommitmentPoint = remoteNextCommitInfo.right ?: return Either.Left(CannotSignBeforeRevocation(channelId))
         if (!changes.localHasChanges()) return Either.Left(CannotSignWithoutChanges(channelId))
         val (active1, sigs) = active.map { c ->

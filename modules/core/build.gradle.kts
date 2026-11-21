@@ -112,23 +112,7 @@ kotlin {
         jvmMain {
             dependencies {
                 api("io.ktor:ktor-client-okhttp:${libs.versions.ktor.get()}")
-                // The Iceberg fork of secp256k1-kmp (JVM-only), published to the local Maven repository
-                // as 0.23.0-iceberg by publish-iceberg-secp256k1.sh. We depend on the individual
-                // artifacts instead of the secp256k1-kmp-jni-jvm aggregator, because the aggregator
-                // would also pull upstream's 0.23.0 jni-common (which has no Iceberg class).
-                implementation("fr.acinq.secp256k1:secp256k1-kmp-jni-common:${libs.versions.secpjnijvm.get()}")
-                implementation("fr.acinq.secp256k1:secp256k1-kmp-jni-jvm-extract:${libs.versions.secpjnijvm.get()}")
-                implementation("fr.acinq.secp256k1:secp256k1-kmp-jni-jvm-linux:${libs.versions.secpjnijvm.get()}")
-                // Non-linux desktop platforms keep upstream's native libraries: stock cryptography
-                // works there, Iceberg calls fail loudly with UnsatisfiedLinkError. The exclusion
-                // prevents upstream's 0.23.0 jni-common/extract from winning version resolution
-                // against our 0.23.0-iceberg artifacts (Gradle ranks "0.23.0" above "0.23.0-iceberg").
-                implementation("fr.acinq.secp256k1:secp256k1-kmp-jni-jvm-darwin:${libs.versions.secpjnijvmupstream.get()}") {
-                    exclude(group = "fr.acinq.secp256k1")
-                }
-                implementation("fr.acinq.secp256k1:secp256k1-kmp-jni-jvm-mingw:${libs.versions.secpjnijvmupstream.get()}") {
-                    exclude(group = "fr.acinq.secp256k1")
-                }
+                implementation("fr.acinq.secp256k1:secp256k1-kmp-jni-jvm:${libs.versions.secpjnijvm.get()}")
                 implementation("org.slf4j:slf4j-api:${libs.versions.slf4j.get()}")
             }
         }
@@ -165,14 +149,6 @@ kotlin {
     configurations.all {
         // do not cache changing (i.e. SNAPSHOT) dependencies
         resolutionStrategy.cacheChangingModulesFor(0, TimeUnit.SECONDS)
-        // Belt and braces: the Iceberg-carrying artifacts must never resolve to upstream's 0.23.0,
-        // which has no Iceberg class and would fail late at the first JNI call instead of at
-        // dependency resolution time.
-        resolutionStrategy.force(
-            "fr.acinq.secp256k1:secp256k1-kmp-jni-common:${libs.versions.secpjnijvm.get()}",
-            "fr.acinq.secp256k1:secp256k1-kmp-jni-jvm-extract:${libs.versions.secpjnijvm.get()}",
-            "fr.acinq.secp256k1:secp256k1-kmp-jni-jvm-linux:${libs.versions.secpjnijvm.get()}",
-        )
     }
 
     @OptIn(ExperimentalKotlinGradlePluginApi::class)
@@ -202,7 +178,7 @@ dokka {
     }
 }
 
-val javadocJar = tasks.create<Jar>("javadocJar") {
+val javadocJar = tasks.register<Jar>("javadocJar") {
     archiveClassifier.set("javadoc")
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
     dependsOn("dokkaGenerate")
@@ -300,12 +276,12 @@ afterEvaluate {
 }
 
 /** Electrum integration test environment + tasks configuration */
-val dockerTestEnv by tasks.creating(Exec::class) {
+val dockerTestEnv by tasks.registering(Exec::class) {
     workingDir = rootDir.resolve("testing")
     commandLine("bash", "env.sh", "remove", "net-create", "btc-create", "elx-create", "btc-start", "elx-start")
 }
 
-val dockerCleanup by tasks.creating(Exec::class) {
+val dockerCleanup by tasks.registering(Exec::class) {
     workingDir = rootDir.resolve("testing")
     commandLine("bash", "env.sh", "elx-stop", "btc-stop", "remove")
 }
@@ -343,11 +319,11 @@ tasks.register<JavaExec>("icebergMeasurement") {
     description = "Measures the per-payment cost of an Iceberg group-backed funding signer (see ICEBERG-PORT.md)."
     val testCompilation = kotlin.targets.getByName("jvm").compilations.getByName("test")
     dependsOn(testCompilation.compileTaskProvider)
-    classpath = files(testCompilation.output.allOutputs) + testCompilation.runtimeDependencyFiles
+    classpath = files(testCompilation.output.allOutputs, testCompilation.runtimeDependencyFiles)
     mainClass.set("fr.acinq.lightning.iceberg.IcebergCycleMeasurementRun")
     // Pass through the measurement's system properties.
     System.getProperties().stringPropertyNames().filter { it.startsWith("iceberg.") }.forEach { systemProperty(it, System.getProperty(it)) }
-    if (project.hasProperty("iceberg.out")) args(project.property("iceberg.out"))
+    if (project.hasProperty("iceberg.out")) args(project.property("iceberg.out").toString())
     // A timing measurement wants a stable heap: fixed size, no resize pauses.
     jvmArgs("-Xms4g", "-Xmx4g")
 }

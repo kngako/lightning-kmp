@@ -532,13 +532,13 @@ object Transactions {
             val witness = when (commitmentFormat) {
                 CommitmentFormat.AnchorOutputs -> {
                     val redeemScript = Script.write(Scripts.toLocalDelayed(commitKeys.publicKeys, toLocalDelay)).byteVector()
-                    val sig = sign(commitKeys.ourDelayedPaymentKey, sigHash, RedeemInfo.P2wsh(redeemScript), extraUtxos = mapOf())
+                    val sig = sign(commitKeys.delayedPaymentKey("spend a delayed output"), sigHash, RedeemInfo.P2wsh(redeemScript), extraUtxos = mapOf())
                     Scripts.witnessToLocalDelayedAfterDelay(sig, redeemScript)
                 }
                 CommitmentFormat.SimpleTaprootChannels -> {
                     val scriptTree: ScriptTree.Leaf = Scripts.Taproot.htlcDelayedScriptTree(commitKeys.publicKeys, toLocalDelay)
                     val redeemInfo = RedeemInfo.TaprootScriptPath(commitKeys.revocationPublicKey.xOnly(), scriptTree, scriptTree.hash())
-                    val sig = sign(commitKeys.ourDelayedPaymentKey, sigHash, redeemInfo, extraUtxos = mapOf())
+                    val sig = sign(commitKeys.delayedPaymentKey("spend a delayed output"), sigHash, redeemInfo, extraUtxos = mapOf())
                     Script.witnessScriptPathPay2tr(commitKeys.revocationPublicKey.xOnly(), scriptTree, ScriptWitness(listOf(sig)), scriptTree)
                 }
             }
@@ -744,13 +744,13 @@ object Transactions {
             val witness = when (commitmentFormat) {
                 CommitmentFormat.AnchorOutputs -> {
                     val redeemScript = Script.write(Scripts.toLocalDelayed(commitKeys.publicKeys, toLocalDelay)).byteVector()
-                    val sig = sign(commitKeys.ourDelayedPaymentKey, sigHash, RedeemInfo.P2wsh(redeemScript), extraUtxos = mapOf())
+                    val sig = sign(commitKeys.delayedPaymentKey("spend a delayed output"), sigHash, RedeemInfo.P2wsh(redeemScript), extraUtxos = mapOf())
                     Scripts.witnessToLocalDelayedAfterDelay(sig, redeemScript)
                 }
                 CommitmentFormat.SimpleTaprootChannels -> {
                     val toLocalTree = Scripts.Taproot.toLocalScriptTree(commitKeys.publicKeys, toLocalDelay)
                     val redeemInfo = RedeemInfo.TaprootScriptPath(NUMS_POINT.xOnly(), toLocalTree.scriptTree, toLocalTree.localDelayed.hash())
-                    val sig = sign(commitKeys.ourDelayedPaymentKey, sigHash, redeemInfo, extraUtxos = mapOf())
+                    val sig = sign(commitKeys.delayedPaymentKey("spend a delayed output"), sigHash, redeemInfo, extraUtxos = mapOf())
                     Script.witnessScriptPathPay2tr(redeemInfo.internalKey, redeemInfo.leaf, ScriptWitness(listOf(sig)), toLocalTree.scriptTree)
                 }
             }
@@ -803,13 +803,13 @@ object Transactions {
             val witness = when (commitmentFormat) {
                 CommitmentFormat.AnchorOutputs -> {
                     val redeemScript = Script.write(Scripts.toRemoteDelayed(commitKeys.publicKeys)).byteVector()
-                    val sig = sign(commitKeys.ourPaymentKey, sigHash, RedeemInfo.P2wsh(redeemScript), extraUtxos = mapOf())
+                    val sig = sign(commitKeys.paymentKey("claim our main output"), sigHash, RedeemInfo.P2wsh(redeemScript), extraUtxos = mapOf())
                     Scripts.witnessToRemoteDelayedAfterDelay(sig, redeemScript)
                 }
                 CommitmentFormat.SimpleTaprootChannels -> {
                     val scriptTree: ScriptTree.Leaf = Scripts.Taproot.toRemoteScriptTree(commitKeys.publicKeys)
                     val redeemInfo = RedeemInfo.TaprootScriptPath(NUMS_POINT.xOnly(), scriptTree, scriptTree.hash())
-                    val sig = sign(commitKeys.ourPaymentKey, sigHash, redeemInfo, extraUtxos = mapOf())
+                    val sig = sign(commitKeys.paymentKey("claim our main output"), sigHash, redeemInfo, extraUtxos = mapOf())
                     Script.witnessScriptPathPay2tr(redeemInfo.internalKey, scriptTree, ScriptWitness(listOf(sig)), scriptTree)
                 }
             }

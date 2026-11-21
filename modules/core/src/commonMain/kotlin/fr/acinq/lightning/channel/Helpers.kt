@@ -266,12 +266,12 @@ object Helpers {
 
         fun isValidFinalScriptPubkey(scriptPubKey: ByteVector, allowAnySegwit: Boolean, allowOpReturn: Boolean): Boolean = isValidFinalScriptPubkey(scriptPubKey.toByteArray(), allowAnySegwit, allowOpReturn)
 
-        fun createShutdown(channelKeys: ChannelKeys, commitment: FullCommitment, localScriptOverride: ByteVector? = null): Pair<FundingSigner.CloseeNonceSession?, Shutdown> {
+        fun createShutdown(channelKeys: ChannelKeys, commitment: FullCommitment, localScriptOverride: ByteVector? = null): Pair<FundingSigner.PublishedNonceSession?, Shutdown> {
             val localScript = localScriptOverride ?: commitment.channelParams.localParams.defaultFinalScriptPubKey
             return when (commitment.commitmentFormat) {
                 Transactions.CommitmentFormat.SimpleTaprootChannels -> {
                     // We create a fresh local closee nonce every time we send shutdown.
-                    val localCloseeNonce = channelKeys.fundingSigner(commitment.fundingTxIndex).closeeNonce(commitment.fundingTxId, commitment.remoteFundingPubkey)
+                    val localCloseeNonce = channelKeys.fundingSigner(commitment.fundingTxIndex).publishedNonceSession(commitment.fundingTxId, commitment.remoteFundingPubkey)
                     Pair(localCloseeNonce, Shutdown(commitment.channelId, localScript, localCloseeNonce.publicNonce))
                 }
                 Transactions.CommitmentFormat.AnchorOutputs -> Pair(null, Shutdown(commitment.channelId, localScript))
@@ -279,7 +279,7 @@ object Helpers {
         }
 
         /** We are the closer: we sign closing transactions for which we pay the fees. */
-        fun makeClosingTxs(
+        suspend fun makeClosingTxs(
             channelKeys: ChannelKeys,
             commitment: FullCommitment,
             localScriptPubkey: ByteVector,
@@ -329,8 +329,9 @@ object Helpers {
                         // If we cannot create our partial signature for one of our closing txs, we just skip it.
                         // It will only happen if our peer sent an invalid nonce, in which case we cannot do anything anyway
                         // apart from eventually force-closing.
-                        fun localSig(tx: Transactions.ClosingTx): ChannelSpendSignature.PartialSignatureWithNonce? {
-                            return fundingSigner.signWithFreshNonce(tx, commitment.remoteFundingPubkey, mapOf(), commitment.fundingTxId, remoteNonce).right
+                        suspend fun localSig(tx: Transactions.ClosingTx): ChannelSpendSignature.PartialSignatureWithNonce? {
+                            val context = FundingSigner.SigningContext.Closing(commitment.channelParams, localScriptPubkey, remoteScriptPubkey, commitment.localCommit.spec)
+                            return fundingSigner.signWithFreshNonce(tx, commitment.remoteFundingPubkey, mapOf(), commitment.fundingTxId, remoteNonce, context).right
                         }
 
                         TlvStream(
@@ -353,14 +354,14 @@ object Helpers {
          * Callers should ignore failures: since the protocol is fully asynchronous, failures here simply mean that they
          * are not using our latest script (race condition between our closing_complete and theirs).
          */
-        fun signClosingTx(
+        suspend fun signClosingTx(
             channelKeys: ChannelKeys,
             commitment: FullCommitment,
             localScriptPubkey: ByteVector,
             remoteScriptPubkey: ByteVector,
             closingComplete: ClosingComplete,
-            localNonce: FundingSigner.CloseeNonceSession?
-        ): Either<ChannelException, Triple<Transactions.ClosingTx, ClosingSig, FundingSigner.CloseeNonceSession?>> {
+            localNonce: FundingSigner.PublishedNonceSession?
+        ): Either<ChannelException, Triple<Transactions.ClosingTx, ClosingSig, FundingSigner.PublishedNonceSession?>> {
             val closingFee = Transactions.ClosingTxFee.PaidByThem(closingComplete.fees)
             val closingTxs = Transactions.makeClosingTxs(commitment.commitInput(channelKeys), commitment.localCommit.spec, closingFee, closingComplete.lockTime, localScriptPubkey, remoteScriptPubkey)
             // If our output isn't dust, they must provide a signature for a transaction that includes it.
@@ -394,7 +395,8 @@ object Helpers {
                             if (!closingTx.checkRemotePartialSignature(localFundingPubkey, commitment.remoteFundingPubkey, remoteSig, localNonce.publicNonce)) {
                                 return Either.Left(InvalidCloseSignature(commitment.channelId, closingTx.tx.txid))
                             }
-                            val localSig = fundingSigner.signWithCloseeNonce(closingTx, commitment.remoteFundingPubkey, mapOf(), localNonce, remoteSig.nonce).right
+                            val context = FundingSigner.SigningContext.Closing(commitment.channelParams, localScriptPubkey, remoteScriptPubkey, commitment.localCommit.spec)
+                            val localSig = fundingSigner.signWithPublishedNonce(closingTx, commitment.remoteFundingPubkey, mapOf(), localNonce, remoteSig.nonce, context).right
                             val signedTx = localSig?.let { closingTx.aggregateSigs(localFundingPubkey, commitment.remoteFundingPubkey, it, remoteSig, mapOf()).right }
                             if (localSig == null || signedTx == null) {
                                 return Either.Left(InvalidCloseSignature(commitment.channelId, closingTx.tx.txid))
@@ -403,7 +405,7 @@ object Helpers {
                             if (!signedClosingTx.validate(mapOf())) {
                                 return Either.Left(InvalidCloseSignature(commitment.channelId, closingTx.tx.txid))
                             }
-                            val nextLocalNonce = fundingSigner.closeeNonce(commitment.fundingTxId, commitment.remoteFundingPubkey)
+                            val nextLocalNonce = fundingSigner.publishedNonceSession(commitment.fundingTxId, commitment.remoteFundingPubkey)
                             val tlvs = TlvStream(sigToTlv(localSig.partialSig), ClosingSigTlv.NextCloseeNonce(nextLocalNonce.publicNonce))
                             Either.Right(Triple(signedClosingTx, ClosingSig(commitment.channelId, remoteScriptPubkey, localScriptPubkey, closingComplete.fees, closingComplete.lockTime, tlvs), nextLocalNonce))
                         }
@@ -524,8 +526,9 @@ object Helpers {
                 require(commitment.localCommit.txId == commitTx.txid) { "txid mismatch, provided tx is not the current local commit tx" }
                 val commitKeys = channelKeys.localCommitmentKeys(commitment.channelParams, commitment.localCommit.index)
                 val feerateDelayed = feerates.claimMainFeerate
-                // first we will claim our main output as soon as the delay is over
-                val mainDelayedTx = generateTx("main-delayed-output") {
+                // first we will claim our main output as soon as the delay is over -- unless a group holds
+                // its key, in which case the group sweeps it and this node must not try (GroupHeldOutputs)
+                val mainDelayedTx = if (commitKeys.ourDelayedPaymentKey == null) null else generateTx("main-delayed-output") {
                     Transactions.ClaimLocalDelayedOutputTx.createUnsignedTx(
                         commitKeys,
                         commitTx,
@@ -691,7 +694,7 @@ object Helpers {
                     val commitKeys = commitment.localKeys(channelKeys)
                     // Note that this will return null if the transaction wasn't one of our HTLC transactions, which may happen
                     // if our peer was able to claim the HTLC output before us (race condition between success and timeout).
-                    val htlcDelayedTx = generateTx("htlc-delayed") {
+                    val htlcDelayedTx = if (commitKeys.ourDelayedPaymentKey == null) null else generateTx("htlc-delayed") {
                         Transactions.HtlcDelayedTx.createUnsignedTx(
                             commitKeys,
                             tx,
@@ -780,6 +783,8 @@ object Helpers {
                 finalScriptPubKey: ByteVector,
                 claimMainFeerate: FeeratePerKw
             ): Transactions.ClaimRemoteDelayedOutputTx? {
+                // A group-held payment key is the group's to sweep (GroupHeldOutputs), not this node's.
+                if (commitKeys.ourPaymentKey == null) return null
                 return generateTx("claim-remote-delayed-output") {
                     Transactions.ClaimRemoteDelayedOutputTx.createUnsignedTx(
                         commitKeys,
@@ -1002,8 +1007,8 @@ object Helpers {
                 val feerateMain = feerates.claimMainFeerate
                 // We need to use a high fee here for punishment txs because after a delay they can be spent by the counterparty.
                 val feeratePenalty = feerates.fastFeerate
-                // First we will claim our main output right away.
-                val mainTx = generateTx("claim-remote-delayed-output") {
+                // First we will claim our main output right away, unless it is a group's to sweep.
+                val mainTx = if (commitKeys.ourPaymentKey == null) null else generateTx("claim-remote-delayed-output") {
                     Transactions.ClaimRemoteDelayedOutputTx.createUnsignedTx(
                         commitKeys,
                         commitTx,

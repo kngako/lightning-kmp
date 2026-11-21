@@ -420,7 +420,7 @@ sealed class ChannelStateWithCommitments : PersistedChannelState() {
     internal fun ChannelContext.createChannelReady(): ChannelReady {
         // NB: even after splices, the verification nonce for commit index 1 is derived with the first funding
         // transaction's key (index 0): this preserves the pre-existing behaviour, and a threshold-backed channel
-        // only ever has a funding key at index 0 anyway.
+        // serves the same key at every index anyway.
         val fundingSigner = channelKeys().fundingSigner(fundingTxIndex = 0)
         val remoteFundingKey = commitments.latest.remoteFundingPubkey
         val nextPerCommitmentPoint = channelKeys().commitmentPoint(1)
@@ -453,11 +453,11 @@ sealed class ChannelStateWithCommitments : PersistedChannelState() {
         return commitments.all.filter { it.fundingTxIndex > 0 && it.fundingTxIndex > lastLockedBefore && it.fundingTxIndex <= lastLockedAfter }
     }
 
-    internal fun ChannelContext.startClosingNegotiation(
+    internal suspend fun ChannelContext.startClosingNegotiation(
         cmd: ChannelCommand.Close.MutualClose?,
         commitments: Commitments,
         localShutdown: Shutdown,
-        localCloseeNonce: FundingSigner.CloseeNonceSession?,
+        localCloseeNonce: FundingSigner.PublishedNonceSession?,
         remoteShutdown: Shutdown,
         actions: List<ChannelAction>,
     ): Pair<Negotiating, List<ChannelAction>> {

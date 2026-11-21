@@ -16,6 +16,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import fr.acinq.lightning.tests.utils.runSuspendTest
 
 /**
  * The seam's regression proof: [FundingSigner.PrivateKeyFundingSigner] must be byte-for-byte the
@@ -39,7 +40,7 @@ class FundingSignerTestsCommon : LightningTestSuite() {
     }
 
     @Test
-    fun `private-key signer partial signatures verify against the counterparty session`() {
+    fun `private-key signer partial signatures verify against the counterparty session`() = runSuspendTest {
         val (spendTx, _) = FundingSignerTestHelpers.buildFundingSpend(fundingKey.publicKey(), remoteFundingKey)
         val fundingTxId = spendTx.input.outPoint.txid
         val remoteNonce = NonceGenerator.signingNonce(remoteFundingKey, fundingKey.publicKey(), fundingTxId)
@@ -60,14 +61,14 @@ class FundingSignerTestsCommon : LightningTestSuite() {
     }
 
     @Test
-    fun `private-key closee nonce session signs the closing transaction`() {
+    fun `private-key published nonce session signs the transaction it was published for`() = runSuspendTest {
         val (spendTx, _) = FundingSignerTestHelpers.buildFundingSpend(fundingKey.publicKey(), remoteFundingKey)
         val fundingTxId = spendTx.input.outPoint.txid
         val remoteNonce = NonceGenerator.signingNonce(remoteFundingKey, fundingKey.publicKey(), fundingTxId)
 
-        val session = signer.closeeNonce(fundingTxId, remoteFundingKey)
-        val psig = signer.signWithCloseeNonce(spendTx, remoteFundingKey, mapOf(), session, remoteNonce.publicNonce)
-        assertTrue(psig.isRight, "signWithCloseeNonce failed: $psig")
+        val session = signer.publishedNonceSession(fundingTxId, remoteFundingKey)
+        val psig = signer.signWithPublishedNonce(spendTx, remoteFundingKey, mapOf(), session, remoteNonce.publicNonce)
+        assertTrue(psig.isRight, "signWithPublishedNonce failed: $psig")
         assertEquals(session.publicNonce, psig.right!!.nonce)
         assertTrue(spendTx.checkRemotePartialSignature(remoteFundingKey, fundingKey.publicKey(), psig.right!!, remoteNonce.publicNonce))
     }
@@ -85,10 +86,10 @@ class FundingSignerTestsCommon : LightningTestSuite() {
             override val publicKey = randomKey().publicKey()
             override val privateKeyOrNull: PrivateKey? = null
             override fun verificationNonce(id: FundingSigner.VerificationNonceId): IndividualNonce = TODO()
-            override fun signWithVerificationNonce(tx: Transactions.ChannelSpendTransaction, remoteFundingPubKey: PublicKey, extraUtxos: Map<OutPoint, TxOut>, id: FundingSigner.VerificationNonceId, remoteNonce: IndividualNonce) = TODO()
-            override fun signWithFreshNonce(tx: Transactions.ChannelSpendTransaction, remoteFundingPubKey: PublicKey, extraUtxos: Map<OutPoint, TxOut>, fundingTxId: TxId, remoteNonce: IndividualNonce) = TODO()
-            override fun closeeNonce(fundingTxId: TxId, remoteFundingPubKey: PublicKey): FundingSigner.CloseeNonceSession = TODO()
-            override fun signWithCloseeNonce(tx: Transactions.ChannelSpendTransaction, remoteFundingPubKey: PublicKey, extraUtxos: Map<OutPoint, TxOut>, session: FundingSigner.CloseeNonceSession, remoteNonce: IndividualNonce) = TODO()
+            override suspend fun signWithVerificationNonce(tx: Transactions.ChannelSpendTransaction, remoteFundingPubKey: PublicKey, extraUtxos: Map<OutPoint, TxOut>, id: FundingSigner.VerificationNonceId, remoteNonce: IndividualNonce, context: FundingSigner.SigningContext) = TODO()
+            override suspend fun signWithFreshNonce(tx: Transactions.ChannelSpendTransaction, remoteFundingPubKey: PublicKey, extraUtxos: Map<OutPoint, TxOut>, fundingTxId: TxId, remoteNonce: IndividualNonce, context: FundingSigner.SigningContext) = TODO()
+            override fun publishedNonceSession(fundingTxId: TxId, remoteFundingPubKey: PublicKey): FundingSigner.PublishedNonceSession = TODO()
+            override suspend fun signWithPublishedNonce(tx: Transactions.ChannelSpendTransaction, remoteFundingPubKey: PublicKey, extraUtxos: Map<OutPoint, TxOut>, session: FundingSigner.PublishedNonceSession, remoteNonce: IndividualNonce, context: FundingSigner.SigningContext) = TODO()
         }
         val thresholdChannelKeys = TestConstants.Alice.keyManager.channelKeys(KeyPath.empty).withFundingSigner(thresholdSigner)
 
@@ -98,8 +99,8 @@ class FundingSignerTestsCommon : LightningTestSuite() {
         // The raw key is unreachable: a wrong answer is worse than a loud failure.
         assertFailsWith<IllegalArgumentException> { thresholdChannelKeys.fundingKey(0) }
         assertFailsWith<IllegalStateException> { thresholdChannelKeys.fundingSigner(0).privateKey("some operation") }
-        // Splicing derives the key at the next index: it must fail loudly rather than reuse index 0.
-        assertFailsWith<IllegalArgumentException> { thresholdChannelKeys.fundingPublicKey(1) }
-        assertFailsWith<IllegalArgumentException> { thresholdChannelKeys.fundingSigner(1) }
+        // A splice asks for the key at the next index, and gets the same signer's one key (design B).
+        assertEquals(thresholdSigner.publicKey, thresholdChannelKeys.fundingPublicKey(1))
+        assertEquals(thresholdSigner, thresholdChannelKeys.fundingSigner(1))
     }
 }

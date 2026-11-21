@@ -17,6 +17,7 @@ import fr.acinq.lightning.blockchain.fee.FeeratePerKw
 import fr.acinq.lightning.channel.*
 import fr.acinq.lightning.channel.TestsHelper.createWallet
 import fr.acinq.lightning.channel.states.*
+import fr.acinq.lightning.crypto.GatedFundingSigner
 import fr.acinq.lightning.db.InMemoryDatabases
 import fr.acinq.lightning.db.LightningOutgoingPayment
 import fr.acinq.lightning.io.*
@@ -504,6 +505,34 @@ class PeerTest : LightningTestSuite() {
         alice.forward(bobRevokeAndAck2)
 
         alice.expectState<Normal> { commitments.availableBalanceForReceive() > alice0.commitments.availableBalanceForReceive() }
+    }
+
+    @Test
+    fun `a ping is answered while a channel waits on its funding signer`() = runSuspendTest {
+        // A group-backed channel suspends inside the peer's event loop while the group's devices answer
+        // round two. Keep-alive must not wait behind it, or the counterparty drops the connection.
+        val open = kotlinx.coroutines.flow.MutableStateFlow(true)
+        val group = fr.acinq.lightning.crypto.IcebergSigner.keygen(4, 2, randomBytes32())
+        val gated = GatedFundingSigner(fr.acinq.lightning.crypto.IcebergFundingSigner(group), open)
+        val (alice0, bob0) = TestsHelper.reachNormal(aliceFundingSigner = gated)
+        val nodeParams = Pair(alice0.staticParams.nodeParams, bob0.staticParams.nodeParams)
+        val walletParams = Pair(
+            TestConstants.Alice.walletParams.copy(trampolineNode = NodeUri(bob0.staticParams.nodeParams.nodeId, "bob.com", 9735)),
+            TestConstants.Bob.walletParams
+        )
+        val (alice, bob, alice2bob, _) = newPeers(this, nodeParams, walletParams, listOf(alice0 to bob0), automateMessaging = false)
+        val invoice = bob.createInvoice(randomBytes32(), 15_000_000.msat, Either.Left("test invoice"), null)
+
+        open.value = false
+        alice.send(PayInvoice(UUID.randomUUID(), invoice.amount!!, LightningOutgoingPayment.Details.Normal(invoice)))
+        alice2bob.expectStrict<UpdateAddHtlc>()
+        // Alice is now signing Bob's commitment, and her signer is not answering.
+        gated.waiting.first { it > 0 }
+        alice.forward(Ping(4, ByteVector("deadbeef")))
+        assertEquals(4, alice2bob.expectStrict<Pong>().data.size())
+
+        open.value = true
+        alice2bob.expectStrict<CommitSig>()
     }
 
     @Test

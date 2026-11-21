@@ -25,7 +25,7 @@ data class Negotiating(
     val publishedClosingTxs: List<Transactions.ClosingTx>,
     val waitingSinceBlock: Long, // how many blocks since we initiated the closing
     val closeCommand: ChannelCommand.Close.MutualClose?,
-    val localCloseeNonce: FundingSigner.CloseeNonceSession?,
+    val localCloseeNonce: FundingSigner.PublishedNonceSession?,
     val remoteCloseeNonce: IndividualNonce?,
     val localClosingComplete: ClosingComplete?,
 ) : ChannelStateWithCommitments() {

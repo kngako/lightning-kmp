@@ -1,5 +1,6 @@
 package fr.acinq.lightning.channel
 
+import fr.acinq.lightning.crypto.SwapInOnChainKeys
 import fr.acinq.bitcoin.*
 import fr.acinq.lightning.*
 import fr.acinq.lightning.Lightning.randomBytes32
@@ -109,7 +110,8 @@ data class LNChannel<out S : ChannelState>(
         }
     }
 
-    fun signCommitTx(): Transaction = commitments.latest.fullySignedCommitTx(channelKeys)
+    // Blocks rather than suspends: eighty tests call this, and the signer behind it only suspends for a remote group.
+    fun signCommitTx(): Transaction = runBlocking { commitments.latest.fullySignedCommitTx(channelKeys) }
 
     fun unsignedHtlcTxs(): List<Transactions.HtlcTx> = commitments.latest.unsignedHtlcTxs(channelKeys).map { it.first }
 
@@ -245,8 +247,10 @@ object TestsHelper {
         )
 
         val channelFlags = ChannelFlags(announceChannel = false, nonInitiatorPaysCommitFees = requestRemoteFunding != null)
-        val aliceChannelParams = TestConstants.Alice.channelParams(payCommitTxFees = !channelFlags.nonInitiatorPaysCommitFees).copy(features = aliceFeatures.initFeatures())
-        val bobChannelParams = TestConstants.Bob.channelParams(payCommitTxFees = channelFlags.nonInitiatorPaysCommitFees).copy(features = bobFeatures.initFeatures())
+        // Built from the node params above rather than TestConstants', so a key manager that decides where
+        // the channel closes to (a group node's) is the one that decides it here too.
+        val aliceChannelParams = LocalChannelParams(aliceNodeParams, isChannelOpener = true, payCommitTxFees = !channelFlags.nonInitiatorPaysCommitFees).copy(features = aliceFeatures.initFeatures())
+        val bobChannelParams = LocalChannelParams(bobNodeParams, isChannelOpener = false, payCommitTxFees = channelFlags.nonInitiatorPaysCommitFees).copy(features = bobFeatures.initFeatures())
         val aliceInit = Init(aliceFeatures)
         val bobInit = Init(bobFeatures)
         val cmd = ChannelCommand.Init.Initiator(
@@ -570,7 +574,7 @@ object TestsHelper {
 
     fun createWallet(keyManager: KeyManager, amount: Satoshi): Pair<PrivateKey, List<WalletState.Utxo>> {
         val swapInAddressIndex = 0
-        val (privateKey, script) = keyManager.swapInOnChainWallet.run { Pair(userPrivateKey, getSwapInProtocol(swapInAddressIndex).pubkeyScript) }
+        val (privateKey, script) = (keyManager.swapInOnChainWallet as SwapInOnChainKeys).run { Pair(userPrivateKey, getSwapInProtocol(swapInAddressIndex).pubkeyScript) }
         val parentTx = Transaction(2, listOf(TxIn(OutPoint(TxId(randomBytes32()), 3), 0)), listOf(TxOut(amount, script)), 0)
         return privateKey to listOf(WalletState.Utxo(parentTx.txid, 0, 42, parentTx, WalletState.AddressMeta.Derived(swapInAddressIndex)))
     }
